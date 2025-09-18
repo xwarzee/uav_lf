@@ -1,0 +1,192 @@
+target Cpp {
+    cmake-include: "../drone_math.cmake"
+}
+
+import FormationController from "FormationController.lf"
+import ObstacleDetector from "ObstacleDetector.lf"
+import MissionExecutor from "MissionExecutor.lf"
+import DroneComms from "DroneComms.lf"
+
+reactor PositionAggregator {
+    // Input ports for each drone position
+    input pos1: {= std::vector<double> =}
+    input pos2: {= std::vector<double> =}
+    input pos3: {= std::vector<double> =}
+    input pos4: {= std::vector<double> =}
+
+    // Output port with aggregated positions
+    output aggregated_positions: {= std::map<int, std::vector<double>> =}
+
+    // State to store all positions
+    state positions: {= std::map<int, std::vector<double>> =}
+
+    // Timer to periodically send aggregated data
+    timer aggregate_timer(0, 50 ms)
+
+    reaction(pos1) {=
+        auto pos = *pos1.get();
+        positions[1] = pos;
+    =}
+
+    reaction(pos2) {=
+        auto pos = *pos2.get();
+        positions[2] = pos;
+    =}
+
+    reaction(pos3) {=
+        auto pos = *pos3.get();
+        positions[3] = pos;
+    =}
+
+    reaction(pos4) {=
+        auto pos = *pos4.get();
+        positions[4] = pos;
+    =}
+
+    reaction(aggregate_timer) -> aggregated_positions {=
+        if (!positions.empty()) {
+            aggregated_positions.set(positions);
+        }
+    =}
+}
+
+reactor DroneNode(
+    drone_id: int = 0,
+    initial_x: double = 0.0,
+    initial_y: double = 0.0,
+    initial_z: double = 0.0
+) {
+    // Communication ports
+    input formation_command: {= std::vector<double> =}
+    input mission_update: {= std::string =}
+    input neighbor_positions: {= std::map<int, std::vector<double>> =}
+
+    output position: {= std::vector<double> =}
+    output status: {= std::string =}
+    output threat_detected: {= bool =}
+
+    // Internal state
+    state x: double = initial_x
+    state y: double = initial_y
+    state z: double = initial_z
+    state velocity: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
+    state mission_active: bool = false
+
+    // Timer for periodic updates
+    timer update_timer(0, 100 ms)
+
+    // Instantiate subsystems
+    formation = new FormationController(drone_id=drone_id)
+    obstacle = new ObstacleDetector(drone_id=drone_id)
+    mission = new MissionExecutor(drone_id=drone_id)
+
+    // Connect internal components
+    // formation.position_command -> position 
+    obstacle.threat_alert -> threat_detected
+    mission.mission_status -> status
+
+    // Formation control reaction
+    reaction(formation_command) {=
+        auto cmd = *formation_command.get();
+        if (cmd.size() >= 3) {
+            // Update target position based on formation command
+            x = cmd[0];
+            y = cmd[1];
+            z = cmd[2];
+        }
+    =}
+
+    // Mission update reaction
+    reaction(mission_update) {=
+        std::string update = *mission_update.get();
+        if (update == "START") {
+            mission_active = true;
+            std::cout << "Drone " << drone_id << ": Mission started" << std::endl;
+        } else if (update == "STOP") {
+            mission_active = false;
+            std::cout << "Drone " << drone_id << ": Mission stopped" << std::endl;
+        }
+    =}
+
+    // Periodic position update
+    reaction(update_timer) -> position {=
+        std::vector<double> current_pos = {x, y, z};
+        position.set(current_pos);
+
+        // Simple movement simulation
+        if (mission_active) {
+            // Basic movement towards target with simple physics
+            double dt = 0.1; // 100ms in seconds
+            x += velocity[0] * dt;
+            y += velocity[1] * dt;
+            z += velocity[2] * dt;
+        }
+    =}
+
+    // Neighbor position processing
+    reaction(neighbor_positions) {=
+        auto neighbors = *neighbor_positions.get();
+
+        // Process neighbor positions for collision avoidance
+        for (const auto& neighbor : neighbors) {
+    //        int neighbor_id = neighbor.first;
+            auto neighbor_pos = neighbor.second;
+
+            if (neighbor_pos.size() >= 3) {
+                double dx = neighbor_pos[0] - x;
+                double dy = neighbor_pos[1] - y;
+                double dz = neighbor_pos[2] - z;
+                double distance = sqrt(dx*dx + dy*dy + dz*dz);
+
+                // Collision avoidance: maintain minimum separation
+                if (distance < 5.0 && distance > 0.1) {
+                    double repulsion_force = 1.0 / (distance * distance);
+                    velocity[0] -= repulsion_force * dx / distance;
+                    velocity[1] -= repulsion_force * dy / distance;
+                    velocity[2] -= repulsion_force * dz / distance;
+                }
+            }
+        }
+    =}
+}
+
+main reactor DroneSwarm {
+    // Create drone instances
+    drone1 = new DroneNode(drone_id=1, initial_x=0.0, initial_y=0.0, initial_z=10.0)
+    drone2 = new DroneNode(drone_id=2, initial_x=10.0, initial_y=0.0, initial_z=10.0)
+    drone3 = new DroneNode(drone_id=3, initial_x=5.0, initial_y=8.66, initial_z=10.0)
+    drone4 = new DroneNode(drone_id=4, initial_x=5.0, initial_y=-8.66, initial_z=10.0)
+
+    // Position aggregator for collecting all drone positions
+    position_aggregator = new PositionAggregator()
+
+    // Formation controller for the entire swarm
+    swarm_formation = new FormationController(drone_id=0) // 0 = leader
+
+    // Mission coordinator
+    mission_coordinator = new MissionExecutor(drone_id=0)
+
+    // Connect formation commands to all drones
+    swarm_formation.position_command -> drone1.formation_command
+    swarm_formation.position_command -> drone2.formation_command
+    swarm_formation.position_command -> drone3.formation_command
+    swarm_formation.position_command -> drone4.formation_command
+
+    // Connect mission updates to all drones
+    mission_coordinator.mission_status -> drone1.mission_update
+    mission_coordinator.mission_status -> drone2.mission_update
+    mission_coordinator.mission_status -> drone3.mission_update
+    mission_coordinator.mission_status -> drone4.mission_update
+
+    // Connect drone positions to position aggregator
+    drone1.position -> position_aggregator.pos1
+    drone2.position -> position_aggregator.pos2
+    drone3.position -> position_aggregator.pos3
+    drone4.position -> position_aggregator.pos4
+
+    // Connect aggregated positions to all drones for neighbor awareness
+    position_aggregator.aggregated_positions -> drone1.neighbor_positions after 10 ms
+    position_aggregator.aggregated_positions -> drone2.neighbor_positions after 10 ms
+    position_aggregator.aggregated_positions -> drone3.neighbor_positions after 10 ms
+    position_aggregator.aggregated_positions -> drone4.neighbor_positions after 10 ms
+}

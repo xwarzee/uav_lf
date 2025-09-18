@@ -1,0 +1,338 @@
+target Cpp
+
+reactor MissionExecutor(
+    drone_id: int = 0
+) {
+    private preamble {=
+        #include <cmath>
+        #include <algorithm>
+        #include <chrono>
+    =}
+
+    // Input ports
+    input mission_command: {= std::string =}
+    input waypoint_data: {= std::vector<std::vector<double>> =}
+    input drone_status: {= std::map<std::string, double> =}
+    input obstacle_alert: bool
+    input formation_ready: bool
+
+    // Output ports
+    output mission_status: {= std::string =}
+    output target_waypoint: {= std::vector<double> =}
+    output mission_complete: bool
+    output emergency_abort: bool
+
+    // State variables
+    state current_mission: {= std::string =} = "IDLE"
+    state mission_waypoints: {= std::vector<std::vector<double>> =}
+    state current_waypoint_index: int = 0
+    state mission_start_time: time
+    state mission_timeout: time = 300s  // 5 minutes default
+    state waypoint_tolerance: double = 2.0  // meters
+    state mission_priority: int = 0  // 0=low, 1=medium, 2=high, 3=critical
+
+    state battery_level: double = 100.0
+    state fuel_level: double = 100.0
+    state system_health: double = 100.0
+    state mission_progress: double = 0.0
+
+    // Mission types
+    state available_missions: {= std::vector<std::string> =} = {= {
+        "PATROL", "ESCORT", "RECONNAISSANCE", "SEARCH_RESCUE",
+        "CARGO_DELIVERY", "SURVEILLANCE", "INTERCEPT", "RTB"
+    } =}
+
+    // Timers
+    timer mission_update_timer(100 ms, 100 ms)
+    timer health_check_timer(0, 1 s)
+
+    // Initialize mission executor
+    reaction(startup) -> mission_status {=
+        std::cout << "Mission Executor " << drone_id << " initialized" << std::endl;
+        std::string status = "INITIALIZED";
+        mission_status.set(status);
+
+        mission_waypoints.clear();
+        current_waypoint_index = 0;
+        mission_progress = 0.0;
+    =}
+
+    // Handle new mission commands
+    reaction(mission_command) -> mission_status, target_waypoint {=
+        std::string command = *mission_command.get();
+
+        if (command == "START" && current_mission != "IDLE") {
+            startMission();
+        } else if (command == "STOP" || command == "ABORT") {
+            abortMission();
+        } else if (command == "PAUSE") {
+            pauseMission();
+        } else if (command == "RESUME") {
+            resumeMission();
+        } else if (command == "RTB") {  // Return to Base
+            initializeRTBMission();
+        } else if (std::find(available_missions.begin(), available_missions.end(), command)
+                   != available_missions.end()) {
+            setMissionType(command);
+        }
+
+        mission_status.set(current_mission);
+    =}
+
+    // Handle waypoint updates
+    reaction(waypoint_data) -> target_waypoint {=
+        auto waypoints = *waypoint_data.get();
+        mission_waypoints = waypoints;
+        current_waypoint_index = 0;
+
+        if (!mission_waypoints.empty() && current_mission != "IDLE") {
+            target_waypoint.set(mission_waypoints[0]);
+            std::cout << "Drone " << drone_id << ": " << mission_waypoints.size()
+                      << " waypoints loaded for mission: " << current_mission << std::endl;
+        }
+    =}
+
+    // Handle drone status updates
+    reaction(drone_status) {=
+        auto status = *drone_status.get();
+
+        if (status.find("battery") != status.end()) {
+            battery_level = status.at("battery");
+        }
+        if (status.find("fuel") != status.end()) {
+            fuel_level = status.at("fuel");
+        }
+        if (status.find("health") != status.end()) {
+            system_health = status.at("health");
+        }
+
+        // Check for critical levels
+        if (battery_level < 20.0 || fuel_level < 15.0 || system_health < 50.0) {
+            if (current_mission != "RTB" && current_mission != "EMERGENCY") {
+                std::cout << "Drone " << drone_id << ": Critical status detected, initiating RTB"
+                          << std::endl;
+                initializeRTBMission();
+            }
+        }
+    =}
+
+    // Handle obstacle alerts
+    reaction(obstacle_alert) -> mission_status {=
+        bool alert = *obstacle_alert.get();
+        if (alert && current_mission != "IDLE") {
+            std::cout << "Drone " << drone_id << ": Obstacle detected, adapting mission"
+                      << std::endl;
+
+            // Pause mission execution until obstacle is cleared
+            if (current_mission != "EMERGENCY" && current_mission != "RTB") {
+                pauseMission();
+            }
+        }
+    =}
+
+    // Mission execution update
+    reaction(mission_update_timer) -> target_waypoint, mission_complete, mission_status {=
+        if (current_mission == "IDLE" || current_mission == "PAUSED") {
+            return;
+        }
+
+        // Check mission timeout
+        auto current_time = get_elapsed_logical_time();
+        if (current_time > mission_start_time + mission_timeout) {
+            std::cout << "Drone " << drone_id << ": Mission timeout, aborting" << std::endl;
+            abortMission();
+            return;
+        }
+
+        // Update mission progress and check waypoint completion
+        updateMissionProgress();
+
+        // Advance to next waypoint if current is reached
+        if (isWaypointReached() && !mission_waypoints.empty()) {
+            current_waypoint_index++;
+
+            if (current_waypoint_index >= (int)mission_waypoints.size()) {
+                // Mission complete
+                completeMission();
+            } else {
+                // Move to next waypoint
+                target_waypoint.set(mission_waypoints[current_waypoint_index]);
+                std::cout << "Drone " << drone_id << ": Advancing to waypoint "
+                          << current_waypoint_index + 1 << "/" << mission_waypoints.size()
+                          << std::endl;
+            }
+        }
+
+        mission_status.set(current_mission + "_PROGRESS_" + std::to_string((int)(mission_progress * 100)) + "%");
+    =}
+
+    // Health monitoring
+    reaction(health_check_timer) -> emergency_abort {=
+        // Monitor critical systems
+        if (battery_level < 5.0 || system_health < 20.0) {
+            std::cout << "Drone " << drone_id << ": EMERGENCY - Critical system failure"
+                      << std::endl;
+            emergency_abort.set(true);
+            current_mission = "EMERGENCY";
+        }
+
+        // Log health status periodically
+        if ((int)get_elapsed_logical_time().count() % 10000 == 0) {  // Every 10 seconds
+            std::cout << "Drone " << drone_id << " Health - Battery: " << battery_level
+                      << "%, Fuel: " << fuel_level << "%, System: " << system_health
+                      << "%" << std::endl;
+        }
+    =}
+
+    // Helper methods
+
+    method startMission() {=
+        if (current_mission != "IDLE" && !mission_waypoints.empty()) {
+            mission_start_time = get_elapsed_logical_time();
+            current_waypoint_index = 0;
+            mission_progress = 0.0;
+
+            std::cout << "Drone " << drone_id << ": Starting mission: "
+                        << current_mission << std::endl;
+
+            // Set first waypoint as target
+            if (!mission_waypoints.empty()) {
+                // This would be set in the reaction
+            }
+        }
+    =}
+
+    method abortMission() {=
+        std::cout << "Drone " << drone_id << ": Mission aborted: " << current_mission
+                    << std::endl;
+        current_mission = "IDLE";
+        mission_waypoints.clear();
+        current_waypoint_index = 0;
+        mission_progress = 0.0;
+    =}
+
+    method pauseMission() {=
+        if (current_mission != "IDLE") {
+            std::cout << "Drone " << drone_id << ": Mission paused: " << current_mission
+                        << std::endl;
+            current_mission = "PAUSED";
+        }
+    =}
+
+    method resumeMission() {=
+        if (current_mission == "PAUSED") {
+            std::cout << "Drone " << drone_id << ": Mission resumed" << std::endl;
+            // Resume previous mission - would need state tracking for this
+            current_mission = "ACTIVE";
+        }
+    =}
+
+    method completeMission() {=
+        std::cout << "Drone " << drone_id << ": Mission completed: " << current_mission
+                    << std::endl;
+
+        mission_progress = 100.0;
+        // In reaction: mission_complete.set(true);
+
+        // Auto-return to base after mission
+        initializeRTBMission();
+    =}
+
+    method setMissionType(mission_type: {= const std::string& =} ) {=
+        current_mission = mission_type;
+        std::cout << "Drone " << drone_id << ": Mission set to: " << mission_type
+                    << std::endl;
+
+        // Set mission-specific parameters
+        
+        if (mission_type == "PATROL") {
+            mission_timeout = 1800s;  // 30 minutes
+            mission_priority = 1;
+        } else if (mission_type == "RECONNAISSANCE") {
+            mission_timeout = 900s;   // 15 minutes
+            mission_priority = 2;
+        } else if (mission_type == "SEARCH_RESCUE") {
+            mission_timeout = 3600s;  // 1 hour
+            mission_priority = 3;
+            waypoint_tolerance = 1.0;  // Higher precision needed
+        } else if (mission_type == "INTERCEPT") {
+            mission_timeout = 600s;   // 10 minutes
+            mission_priority = 3;
+            waypoint_tolerance = 5.0;  // Speed over precision
+        }
+    =}
+
+    method initializeRTBMission() {=
+        current_mission = "RTB";
+        mission_priority = 2;
+
+        // Create simple RTB waypoint (home base)
+        std::vector<double> home_base = {0.0, 0.0, 10.0};
+        mission_waypoints.clear();
+        mission_waypoints.push_back(home_base);
+        current_waypoint_index = 0;
+
+        std::cout << "Drone " << drone_id << ": Returning to base" << std::endl;
+    =}
+
+    method updateMissionProgress() {=
+        if (mission_waypoints.empty()) {
+            mission_progress = 0.0;
+            return;
+        }
+
+        double completed_waypoints = current_waypoint_index;
+        double total_waypoints = mission_waypoints.size();
+
+        mission_progress = (completed_waypoints / total_waypoints) * 100.0;
+        mission_progress = std::min(100.0, std::max(0.0, mission_progress));
+    =}
+
+    method isWaypointReached():bool {=
+        // This would typically check against drone's current position
+        // For simulation, we'll assume waypoints are reached after a delay
+        static auto last_waypoint_time = get_elapsed_logical_time();
+        auto current_time = get_elapsed_logical_time();
+
+        // Simulate waypoint reached after 5 seconds
+        if (current_time > last_waypoint_time + std::chrono::milliseconds(5000)) {
+            last_waypoint_time = current_time;
+            return true;
+        }
+
+        return false;
+    =}
+
+    method calculateDistanceToWaypoint(current_pos: {=const std::vector<double>& =} ,
+                                        waypoint:{=const std::vector<double>& =}):double {=
+        if (current_pos.size() < 3 || waypoint.size() < 3) {
+            return 999.0;  // Invalid position
+        }
+
+        double dx = waypoint[0] - current_pos[0];
+        double dy = waypoint[1] - current_pos[1];
+        double dz = waypoint[2] - current_pos[2];
+
+        return sqrt(dx*dx + dy*dy + dz*dz);
+    =}
+
+    method generatePatrolWaypoints(center_x: double , center_y: double ,
+                                                center_z: double , radius: double ): std::vector<double>  {=
+        std::vector<double> waypoints;
+
+        // Generate circular patrol pattern
+        int num_points = 8;
+        for (int i = 0; i < num_points; i++) {
+            double angle = (2 * M_PI * i) / num_points;
+            double x = center_x + radius * cos(angle);
+            double y = center_y + radius * sin(angle);
+            double z = center_z;
+
+            waypoints.push_back(x);
+            waypoints.push_back(y);
+            waypoints.push_back(z);
+        }
+
+        return waypoints;
+    =}
+}

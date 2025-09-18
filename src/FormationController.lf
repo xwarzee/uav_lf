@@ -1,0 +1,171 @@
+target Cpp
+
+reactor FormationController(
+    drone_id: int = 0,
+    formation_type: int = 0  // 0=diamond, 1=line, 2=V, 3=circle
+) {
+    // Helper method to calculate formation positions
+    public preamble {=
+        #include <cmath>
+        #include <vector>
+    =}
+    // Input ports
+    input leader_position: {= std::vector<double> =}
+    input formation_change: int
+    input swarm_size: int
+
+    // Output ports
+    output position_command: {= std::vector<double> =}
+    output formation_status: {= std::string =}
+
+    // State variables
+    state current_formation: int = formation_type
+    state leader_pos: {= std::vector<double> =} = {= {0.0, 0.0, 10.0} =}
+    state formation_spacing: double = 10.0
+    state formation_initialized: bool = false
+
+    // Timer for formation updates
+    timer formation_timer(100 ms, 50 ms)
+
+    // Initialize formation
+    reaction(startup) -> formation_status {=
+        formation_initialized = true;
+        std::string status = "Formation controller " + std::to_string(drone_id) + " initialized";
+        formation_status.set(status);
+        std::cout << status << std::endl;
+    =}
+
+    // Handle leader position updates
+    reaction(leader_position) {=
+        auto new_leader_pos = leader_position.get();
+        if (new_leader_pos->size() >= 3) {
+            leader_pos = *new_leader_pos;
+        }
+    =}
+
+    // Handle formation type changes
+    reaction(formation_change) -> formation_status {=
+        int new_formation = *formation_change.get();
+        if (new_formation >= 0 && new_formation <= 3) {
+            current_formation = new_formation;
+            std::string formations[] = {"Diamond", "Line", "V-Formation", "Circle"};
+            std::string status = "Formation changed to: " + formations[new_formation];
+            formation_status.set(status);
+            std::cout << "Drone " << drone_id << ": " << status << std::endl;
+        }
+    =}
+
+    // Calculate and send formation positions
+    reaction(formation_timer) -> position_command {=
+        if (!formation_initialized) return;
+
+        std::vector<double> target_position = calculateFormationPosition();
+        position_command.set(target_position);
+    =}
+
+    
+    method calculateFormationPosition():{= std::vector<double> =} {=
+        std::vector<double> position = {0.0, 0.0, 0.0};
+
+        // Base position is leader position
+        if (leader_pos.size() >= 3) {
+            position[0] = leader_pos[0];
+            position[1] = leader_pos[1];
+            position[2] = leader_pos[2];
+        }
+
+        // If this is the leader (drone_id == 0), return current position
+        if (drone_id == 0) {
+            return position;
+        }
+
+        // Calculate offset based on formation type and drone ID
+        double offset_x = 0.0, offset_y = 0.0, offset_z = 0.0;
+
+        switch (current_formation) {
+            case 0: // Diamond formation
+                calculateDiamondOffset(offset_x, offset_y, offset_z);
+                break;
+            case 1: // Line formation
+                calculateLineOffset(offset_x, offset_y, offset_z);
+                break;
+            case 2: // V formation
+                calculateVOffset(offset_x, offset_y, offset_z);
+                break;
+            case 3: // Circle formation
+                calculateCircleOffset(offset_x, offset_y, offset_z);
+                break;
+        }
+
+        position[0] += offset_x;
+        position[1] += offset_y;
+        position[2] += offset_z;
+
+        return position;
+    =}
+
+    method calculateDiamondOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
+        switch (drone_id) {
+            case 1: // Front
+                x = formation_spacing;
+                y = 0.0;
+                break;
+            case 2: // Right
+                x = 0.0;
+                y = formation_spacing;
+                break;
+            case 3: // Back
+                x = -formation_spacing;
+                y = 0.0;
+                break;
+            case 4: // Left
+                x = 0.0;
+                y = -formation_spacing;
+                break;
+            default:
+                // Additional drones form outer diamond
+                double angle = (drone_id - 1) * 2 * M_PI / 8;
+                x = 1.5 * formation_spacing * cos(angle);
+                y = 1.5 * formation_spacing * sin(angle);
+                break;
+        }
+        z = 0.0; // Same altitude as leader
+    =}
+
+    method calculateLineOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
+        // Line formation behind leader
+        x = -(drone_id * formation_spacing);
+        y = 0.0;
+        z = 0.0;
+    =}
+
+    method calculateVOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
+        if (drone_id % 2 == 1) {
+            // Odd IDs go to right side
+            int position = (drone_id + 1) / 2;
+            x = -position * formation_spacing * 0.7;
+            y = position * formation_spacing;
+        } else {
+            // Even IDs go to left side
+            int position = drone_id / 2;
+            x = -position * formation_spacing * 0.7;
+            y = -position * formation_spacing;
+        }
+        z = 0.0;
+    =}
+
+    method calculateCircleOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
+        // Circular formation around leader
+        double angle = (drone_id - 1) * 2 * M_PI / 6; // Assuming max 6 followers
+        x = formation_spacing * cos(angle);
+        y = formation_spacing * sin(angle);
+        z = 0.0;
+    =}
+    
+
+    // Emergency dispersal reaction
+    reaction(startup) {=
+        // Set up emergency dispersal if needed
+        // This could be triggered by external emergency signals
+    =}
+}

@@ -1,0 +1,256 @@
+target Cpp
+
+reactor ObstacleDetector(
+    drone_id: int = 0,
+    detection_range: double = 50.0,
+    threat_threshold: double = 15.0
+) {
+    private preamble  {=
+        #include <cmath>
+        #include <vector>
+        #include <algorithm>
+    =}
+    // Input ports
+    input sensor_data: {= std::vector<double> =}  // [distance, angle, elevation]
+    input drone_position: {= std::vector<double> =}
+    input neighbor_positions: {= std::map<int, std::vector<double>> =}
+
+    // Output ports
+    output threat_alert: bool
+    output avoidance_vector: {= std::vector<double> =}
+    output obstacle_map: {= std::vector<std::vector<double>> =}
+
+    // State variables
+    state current_position: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
+    state detected_obstacles: {= std::vector<std::vector<double>> =}
+    state threat_level: int = 0  // 0=safe, 1=caution, 2=danger, 3=critical
+    state last_sensor_update: time
+    state avoidance_active: bool = false
+
+    // Timer for periodic obstacle processing
+    timer obstacle_timer(0, 25 ms)  // 40Hz processing rate
+
+    // Initialize detector
+    reaction(startup) {=
+        std::cout << "Obstacle Detector " << drone_id << " initialized" << std::endl;
+        std::cout << "Detection range: " << detection_range << "m" << std::endl;
+        std::cout << "Threat threshold: " << threat_threshold << "m" << std::endl;
+
+        detected_obstacles.clear();
+        threat_level = 0;
+        avoidance_active = false;
+    =}
+
+    // Process sensor data (LIDAR, cameras, etc.)
+    reaction(sensor_data) -> threat_alert, obstacle_map {=
+        auto sensor_reading = *sensor_data.get();
+        if (sensor_reading.size() >= 3) {
+            double distance = sensor_reading[0];
+            double angle = sensor_reading[1];        // Horizontal angle (radians)
+            double elevation = sensor_reading[2];    // Vertical angle (radians)
+
+            // Convert polar coordinates to Cartesian relative to drone
+            double x = distance * cos(elevation) * cos(angle);
+            double y = distance * cos(elevation) * sin(angle);
+            double z = distance * sin(elevation);
+
+            // Convert to world coordinates
+            if (current_position.size() >= 3) {
+                x += current_position[0];
+                y += current_position[1];
+                z += current_position[2];
+            }
+
+            // Store obstacle if within detection range
+            if (distance <= detection_range && distance > 0.5) {
+                std::vector<double> obstacle = {x, y, z, distance};
+                detected_obstacles.push_back(obstacle);
+
+                // Limit stored obstacles to prevent memory bloat
+                if (detected_obstacles.size() > 100) {
+                    detected_obstacles.erase(detected_obstacles.begin());
+                }
+            }
+
+            // Check for immediate threats
+            if (distance <= threat_threshold) {
+                threat_alert.set(true);
+                if (distance <= 5.0) {
+                    threat_level = 3; // Critical
+                } else if (distance <= 10.0) {
+                    threat_level = 2; // Danger
+                } else {
+                    threat_level = 1; // Caution
+                }
+
+                std::cout << "THREAT DETECTED by Drone " << drone_id
+                          << " at distance: " << distance << "m" << std::endl;
+            }
+
+            // Update obstacle map
+            obstacle_map.set(detected_obstacles);
+        }
+    =}
+
+    // Update drone position
+    reaction(drone_position) {=
+        current_position = *drone_position.get();
+    =}
+
+    // Process obstacle avoidance
+    reaction(obstacle_timer) -> avoidance_vector, threat_alert {=
+        std::vector<double> avoidance = calculateAvoidanceVector();
+
+        if (avoidance[0] != 0.0 || avoidance[1] != 0.0 || avoidance[2] != 0.0) {
+            avoidance_vector.set(avoidance);
+            avoidance_active = true;
+
+            // Check if we need to alert about threats
+            bool immediate_threat = false;
+            for (const auto& obstacle : detected_obstacles) {
+                if (obstacle.size() >= 4 && obstacle[3] <= threat_threshold) {
+                    immediate_threat = true;
+                    break;
+                }
+            }
+
+            if (immediate_threat) {
+                threat_alert.set(true);
+            }
+        } else {
+            // No avoidance needed
+            if (avoidance_active) {
+                avoidance_active = false;
+                threat_level = 0;
+                threat_alert.set(false);
+                std::cout << "Drone " << drone_id << ": Threat cleared" << std::endl;
+            }
+        }
+
+        // Age out old obstacles (remove obstacles older than 2 seconds)
+        auto current_time = get_elapsed_logical_time();
+        // In a real implementation, you'd track timestamps for each obstacle
+        // For simplicity, we'll just limit the obstacle list size
+    =}
+
+    // Handle neighbor collision avoidance
+    reaction(neighbor_positions) -> avoidance_vector {=
+        auto neighbors = *neighbor_positions.get();
+        std::vector<double> collision_avoidance = {0.0, 0.0, 0.0};
+
+        if (current_position.size() >= 3) {
+            for (const auto& neighbor : neighbors) {
+                int neighbor_id = neighbor.first;
+                auto neighbor_pos = neighbor.second;
+
+                if (neighbor_pos.size() >= 3 && neighbor_id != drone_id) {
+                    double dx = current_position[0] - neighbor_pos[0];
+                    double dy = current_position[1] - neighbor_pos[1];
+                    double dz = current_position[2] - neighbor_pos[2];
+                    double distance = sqrt(dx*dx + dy*dy + dz*dz);
+
+                    // Collision avoidance with other drones
+                    if (distance < 8.0 && distance > 0.1) {
+                        double avoidance_strength = 2.0 / distance;
+                        collision_avoidance[0] += avoidance_strength * dx / distance;
+                        collision_avoidance[1] += avoidance_strength * dy / distance;
+                        collision_avoidance[2] += avoidance_strength * dz / distance;
+                    }
+                }
+            }
+
+            // If collision avoidance is needed, send it
+            double magnitude = sqrt(collision_avoidance[0]*collision_avoidance[0] +
+                                  collision_avoidance[1]*collision_avoidance[1] +
+                                  collision_avoidance[2]*collision_avoidance[2]);
+
+            if (magnitude > 0.1) {
+                avoidance_vector.set(collision_avoidance);
+            }
+        }
+    =}
+
+    // Helper methods
+    method calculateAvoidanceVector():std::vector<double>  {=
+        std::vector<double> avoidance = {0.0, 0.0, 0.0};
+
+        if (current_position.size() < 3 || detected_obstacles.empty()) {
+            return avoidance;
+        }
+
+        // Calculate repulsion from all nearby obstacles
+        for (const auto& obstacle : detected_obstacles) {
+            if (obstacle.size() >= 4) {
+                double obs_x = obstacle[0];
+                double obs_y = obstacle[1];
+                double obs_z = obstacle[2];
+                double distance = obstacle[3];
+
+                // Only consider obstacles within threat range
+                if (distance <= threat_threshold) {
+                    double dx = current_position[0] - obs_x;
+                    double dy = current_position[1] - obs_y;
+                    double dz = current_position[2] - obs_z;
+
+                    // Normalize direction vector
+                    double norm = sqrt(dx*dx + dy*dy + dz*dz);
+                    if (norm > 0.1) {
+                        // Repulsion force inversely proportional to distance
+                        double repulsion_strength = threat_threshold / (distance * distance);
+
+                        avoidance[0] += repulsion_strength * dx / norm;
+                        avoidance[1] += repulsion_strength * dy / norm;
+                        avoidance[2] += repulsion_strength * dz / norm;
+                    }
+                }
+            }
+        }
+
+        // Limit avoidance vector magnitude
+        double magnitude = sqrt(avoidance[0]*avoidance[0] +
+                                avoidance[1]*avoidance[1] +
+                                avoidance[2]*avoidance[2]);
+
+        if (magnitude > 5.0) {  // Max avoidance velocity
+            avoidance[0] = avoidance[0] * 5.0 / magnitude;
+            avoidance[1] = avoidance[1] * 5.0 / magnitude;
+            avoidance[2] = avoidance[2] * 5.0 / magnitude;
+        }
+
+        return avoidance;
+    =}
+
+    // Adaptive threat response based on obstacle type and movement
+    method classifyThreat(obstacle:{=const std::vector<double>&=}):int {=
+        if (obstacle.size() < 4) return 0;
+
+        double distance = obstacle[3];
+
+        if (distance <= 3.0) return 3;      // Critical - immediate collision risk
+        else if (distance <= 8.0) return 2; // High - evasive action required
+        else if (distance <= 15.0) return 1; // Medium - monitor and prepare
+        else return 0; // Low - no immediate concern
+    =}
+
+    // Destroy obstacle (for armed drones with authorization)
+    method attemptObstacleDestruction(obstacle:{=const std::vector<double>&=}):bool {=
+        // This would interface with weapons systems
+        // Only for authorized defensive operations
+
+        if (obstacle.size() < 4) return false;
+
+        double distance = obstacle[3];
+
+        // Only engage if critically close and other avoidance failed
+        if (distance <= 2.0 && threat_level >= 3) {
+            std::cout << "Drone " << drone_id << ": ENGAGING THREAT at "
+                        << distance << "m" << std::endl;
+
+            // In real implementation: activate weapons system
+            // For simulation: assume successful engagement
+            return true;
+        }
+
+        return false;
+    =}
+}

@@ -1,0 +1,412 @@
+target Cpp
+
+reactor DroneComms(
+    drone_id: int = 0,
+    communication_range: double = 100.0,
+    encryption_enabled: bool = true
+) {
+    private preamble {=
+        #include <queue>
+        #include <set>
+        #include <map>
+        #include <chrono>
+        #include <random>
+        #include <iomanip>
+    =}
+    // Input ports
+    input outgoing_message: {= std::map<std::string, std::string> =}
+    input position_update: {= std::vector<double> =}
+    input status_update: {= std::map<std::string, double> =}
+    input emergency_signal: {= std::string =}
+    input mesh_discovery: {= std::vector<int> =}
+
+    // Output ports
+    output incoming_message: {= std::map<std::string, std::string> =}
+    output neighbor_positions: {= std::map<int, std::vector<double>> =}
+    output network_status: {= std::string =}
+    output swarm_health: {= std::map<int, double> =}
+
+    // State variables
+    state current_position: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
+    state drone_status: {= std::map<std::string, double> =}
+    state active_neighbors: {= std::set<int> =}
+    state message_queue: {= std::queue<std::map<std::string, std::string>> =}
+    state network_topology: {= std::map<int, std::vector<int>> =}
+
+    // Communication metrics
+    state packets_sent: int = 0
+    state packets_received: int = 0
+    state packet_loss_rate: double = 0.0
+    state signal_strength: double = 100.0
+    state last_heartbeat: {= std::map<int, std::chrono::time_point<std::chrono::steady_clock>> =}
+
+    // Network configuration
+    state broadcast_interval: time = 500 ms
+    state heartbeat_interval: time = 1 s
+    state discovery_interval: time = 5 s
+    state mesh_update_interval: time = 2 s
+
+    // Timers
+    timer broadcast_timer(0, broadcast_interval)
+    timer heartbeat_timer(0, heartbeat_interval)
+    timer discovery_timer(0, discovery_interval)
+    timer mesh_update_timer(0, mesh_update_interval)
+    timer cleanup_timer(0, 10 s)
+
+    // Initialize communication system
+    reaction(startup) -> network_status {=
+        std::cout << "Drone Communication System " << drone_id << " initialized" << std::endl;
+        std::cout << "Communication range: " << communication_range << "m" << std::endl;
+        std::cout << "Encryption: " << (encryption_enabled ? "ENABLED" : "DISABLED") << std::endl;
+
+        active_neighbors.clear();
+        network_topology.clear();
+        packets_sent = 0;
+        packets_received = 0;
+
+        std::string status = "COMM_ONLINE";
+        network_status.set(status);
+    =}
+
+    // Handle outgoing messages
+    reaction(outgoing_message) {=
+        auto message = outgoing_message.get();
+
+        if (message.find("recipient") != message.end() &&
+            message.find("payload") != message.end()) {
+
+            std::string recipient_str = message.at("recipient");
+            std::string payload = message.at("payload");
+
+            // Handle different message types
+            if (recipient_str == "BROADCAST") {
+                broadcastMessage(payload);
+            } else if (recipient_str == "NEIGHBORS") {
+                sendToNeighbors(payload);
+            } else {
+                try {
+                    int recipient_id = std::stoi(recipient_str);
+                    sendDirectMessage(recipient_id, payload);
+                } catch (const std::exception& e) {
+                    std::cout << "Drone " << drone_id << ": Invalid recipient ID: "
+                              << recipient_str << std::endl;
+                }
+            }
+
+            packets_sent++;
+        }
+    =}
+
+    // Update position for range calculations
+    reaction(position_update) {=
+        current_position = position_update.get();
+    =}
+
+    // Update drone status for health monitoring
+    reaction(status_update) {=
+        drone_status = status_update.get();
+
+        // Update signal strength based on system health
+        if (drone_status.find("health") != drone_status.end()) {
+            double health = drone_status.at("health");
+            signal_strength = std::max(10.0, health);  // Minimum 10% signal
+        }
+    =}
+
+    // Handle emergency signals with priority
+    reaction(emergency_signal) {=
+        std::string emergency = emergency_signal.get();
+
+        std::cout << "Drone " << drone_id << ": EMERGENCY BROADCAST - " << emergency
+                  << std::endl;
+
+        // Create high-priority emergency message
+        std::map<std::string, std::string> emergency_msg = {
+            {"type", "EMERGENCY"},
+            {"sender", std::to_string(drone_id)},
+            {"payload", emergency},
+            {"timestamp", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count())},
+            {"priority", "CRITICAL"}
+        };
+
+        // Broadcast emergency to all reachable drones
+        broadcastEmergency(emergency_msg);
+    =}
+
+    // Regular broadcast of position and status
+    reaction(broadcast_timer) -> neighbor_positions {=
+        if (current_position.size() >= 3) {
+            // Broadcast own position to neighbors
+            std::map<std::string, std::string> broadcast_msg = {
+                {"type", "POSITION_UPDATE"},
+                {"sender", std::to_string(drone_id)},
+                {"x", std::to_string(current_position[0])},
+                {"y", std::to_string(current_position[1])},
+                {"z", std::to_string(current_position[2])},
+                {"timestamp", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count())}
+            };
+
+            // Simulate receiving position updates from neighbors
+            simulateNeighborUpdates();
+        }
+    =}
+
+    // Heartbeat for network health monitoring
+    reaction(heartbeat_timer) -> swarm_health {=
+        // Send heartbeat to all active neighbors
+        std::map<std::string, std::string> heartbeat = {
+            {"type", "HEARTBEAT"},
+            {"sender", std::to_string(drone_id)},
+            {"signal_strength", std::to_string(signal_strength)},
+            {"timestamp", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count())}
+        };
+
+        // Update swarm health status
+        std::map<int, double> health_map;
+        for (int neighbor_id : active_neighbors) {
+            // Simulate health data from neighbors
+            health_map[neighbor_id] = 85.0 + (neighbor_id % 15);  // Simulate varying health
+        }
+        health_map[drone_id] = signal_strength;
+
+        swarm_health.set(health_map);
+    =}
+
+    // Network discovery and mesh maintenance
+    reaction(discovery_timer) -> network_status {=
+        // Discover new drones in range
+        std::cout << "Drone " << drone_id << ": Network discovery scan" << std::endl;
+
+        // Simulate discovery of nearby drones
+        discoverNearbyDrones();
+
+        // Update network status
+        std::string status = "MESH_ACTIVE_NODES_" + std::to_string(active_neighbors.size());
+        network_status.set(status);
+    =}
+
+    // Mesh network topology update
+    reaction(mesh_update_timer) {=
+        updateMeshTopology();
+
+        // Calculate and update packet loss rate
+        calculatePacketLoss();
+
+        std::cout << "Drone " << drone_id << " Network Stats - Sent: " << packets_sent
+                  << ", Received: " << packets_received << ", Loss: "
+                  << std::fixed << std::setprecision(1) << packet_loss_rate << "%"
+                  << std::endl;
+    =}
+
+    // Cleanup old connections and data
+    reaction(cleanup_timer) {=
+        auto current_time = std::chrono::steady_clock::now();
+
+        // Remove inactive neighbors (no heartbeat in 30 seconds)
+        std::vector<int> inactive_neighbors;
+        for (const auto& neighbor : last_heartbeat) {
+            if (current_time - neighbor.second > std::chrono::seconds(30)) {
+                inactive_neighbors.push_back(neighbor.first);
+            }
+        }
+
+        for (int inactive_id : inactive_neighbors) {
+            active_neighbors.erase(inactive_id);
+            last_heartbeat.erase(inactive_id);
+            network_topology.erase(inactive_id);
+
+            std::cout << "Drone " << drone_id << ": Removed inactive neighbor "
+                      << inactive_id << std::endl;
+        }
+
+        // Clean old messages from queue
+        while (message_queue.size() > 50) {  // Limit queue size
+            message_queue.pop();
+        }
+    =}
+
+    // Handle mesh discovery updates
+    reaction(mesh_discovery) {=
+        auto discovered_drones = mesh_discovery.get();
+
+        for (int discovered_id : discovered_drones) {
+            if (discovered_id != drone_id) {
+                active_neighbors.insert(discovered_id);
+                last_heartbeat[discovered_id] = std::chrono::steady_clock::now();
+
+                std::cout << "Drone " << drone_id << ": Discovered drone "
+                          << discovered_id << std::endl;
+            }
+        }
+    =}
+
+    // Helper methods
+    
+    method broadcastMessage(payload: {= const std::string& =}) {=
+        std::cout << "Drone " << drone_id << ": Broadcasting message: "
+                    << payload.substr(0, 50) << (payload.length() > 50 ? "..." : "")
+                    << std::endl;
+
+        // In real implementation: transmit via radio/WiFi
+        packets_sent++;
+    =}
+
+    method sendToNeighbors(payload: {= const std::string& =}) {=
+        std::cout << "Drone " << drone_id << ": Sending to " << active_neighbors.size()
+                    << " neighbors: " << payload.substr(0, 30)
+                    << (payload.length() > 30 ? "..." : "") << std::endl;
+
+        packets_sent += active_neighbors.size();
+    =}
+
+    method sendDirectMessage( recipient_id: int, payload: {= const std::string& =}) {=
+        if (active_neighbors.find(recipient_id) != active_neighbors.end()) {
+            std::cout << "Drone " << drone_id << ": Direct message to " << recipient_id
+                        << ": " << payload.substr(0, 30)
+                        << (payload.length() > 30 ? "..." : "") << std::endl;
+            packets_sent++;
+        } else {
+            // Try routing through mesh network
+            routeMessage(recipient_id, payload);
+        }
+    =}
+
+    method broadcastEmergency(uname: {= const std::map<std::string =}, emergency_msg: {= std::string>& =} ) {=
+        std::cout << "Drone " << drone_id << ": EMERGENCY BROADCAST to all drones!"
+                    << std::endl;
+
+        // Emergency messages get highest priority and multiple retransmissions
+        for (int i = 0; i < 3; i++) {  // Transmit 3 times for reliability
+            broadcastMessage("EMERGENCY:" + emergency_msg.at("payload"));
+        }
+    =}
+
+    method routeMessage(target_id: int , payload: {= const std::string& =} ) {=
+        // Simple routing: find path through network topology
+        if (network_topology.find(target_id) != network_topology.end()) {
+            std::cout << "Drone " << drone_id << ": Routing message to " << target_id
+                        << " via mesh network" << std::endl;
+            packets_sent++;
+        } else {
+            std::cout << "Drone " << drone_id << ": No route to drone " << target_id
+                        << std::endl;
+        }
+    =}
+
+    method simulateNeighborUpdates() {=
+        // Simulate receiving position updates from other drones
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        static std::uniform_real_distribution<> pos_dist(-50.0, 50.0);
+
+        std::map<int, std::vector<double>> neighbor_pos_map;
+
+        // Simulate 2-4 neighboring drones
+        int num_neighbors = 2 + (drone_id % 3);
+        for (int i = 1; i <= num_neighbors; i++) {
+            int neighbor_id = (drone_id + i) % 10 + 1;  // Wrap around drone IDs
+            if (neighbor_id != drone_id) {
+                std::vector<double> neighbor_pos = {
+                    current_position[0] + pos_dist(gen),
+                    current_position[1] + pos_dist(gen),
+                    current_position[2] + (pos_dist(gen) * 0.1)  // Less Z variation
+                };
+                neighbor_pos_map[neighbor_id] = neighbor_pos;
+                active_neighbors.insert(neighbor_id);
+            }
+        }
+
+        // This would be set in the reaction
+        // neighbor_positions.set(neighbor_pos_map);
+    =}
+
+    method discoverNearbyDrones() {=
+        // Simulate discovery of nearby drones based on communication range
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        static std::uniform_int_distribution<> drone_dist(1, 20);
+
+        // Randomly discover 0-2 new drones
+        int discoveries = gen() % 3;
+        for (int i = 0; i < discoveries; i++) {
+            int new_drone = drone_dist(gen);
+            if (new_drone != drone_id) {
+                active_neighbors.insert(new_drone);
+                last_heartbeat[new_drone] = std::chrono::steady_clock::now();
+            }
+        }
+    =}
+
+    method updateMeshTopology() {=
+        // Update network topology based on active neighbors
+        network_topology[drone_id] = std::vector<int>(
+            active_neighbors.begin(), active_neighbors.end());
+
+        // Simulate topology information from neighbors
+        for (int neighbor_id : active_neighbors) {
+            if (network_topology.find(neighbor_id) == network_topology.end()) {
+                // Create topology for neighbor
+                std::vector<int> neighbor_connections;
+                for (int other : active_neighbors) {
+                    if (other != neighbor_id && (other % 3) != (neighbor_id % 3)) {
+                        neighbor_connections.push_back(other);
+                    }
+                }
+                network_topology[neighbor_id] = neighbor_connections;
+            }
+        }
+    =}
+
+    method calculatePacketLoss() {=
+        static int last_packets_sent = 0;
+        static int last_packets_received = 0;
+
+        int sent_delta = packets_sent - last_packets_sent;
+        int received_delta = packets_received - last_packets_received;
+
+        if (sent_delta > 0) {
+            // Simulate some packet loss based on signal strength
+            double expected_received = sent_delta * (signal_strength / 100.0);
+            double actual_loss = std::max(0.0, expected_received - received_delta);
+            packet_loss_rate = (actual_loss / sent_delta) * 100.0;
+        }
+
+        last_packets_sent = packets_sent;
+        last_packets_received = packets_received;
+
+        // Simulate receiving some packets
+        packets_received += (sent_delta * 0.85);  // 85% success rate
+    =}
+
+    method isInRange(pos1: {= const std::vector<double>& =}, pos2: {= const std::vector<double>& =} ):bool {=
+        if (pos1.size() < 3 || pos2.size() < 3) return false;
+
+        double dx = pos1[0] - pos2[0];
+        double dy = pos1[1] - pos2[1];
+        double dz = pos1[2] - pos2[2];
+        double distance = sqrt(dx*dx + dy*dy + dz*dz);
+
+        return distance <= communication_range;
+    =}
+
+    method encryptMessage(message: {= const std::string& =} ): std::string  {=
+        if (!encryption_enabled) return message;
+
+        // Simple XOR encryption for demonstration
+        std::string encrypted = message;
+        char key = 0xAA ^ (drone_id & 0xFF);
+
+        for (char& c : encrypted) {
+            c ^= key;
+        }
+
+        return encrypted;
+    =}
+
+    method decryptMessage(encrypted: {= const std::string& =} ):std::string {=
+        return encryptMessage(encrypted);  // XOR is its own inverse
+    =}
+}
