@@ -79,6 +79,7 @@ reactor DroneNode(
     formation = new FormationController(drone_id=drone_id)
     obstacle = new ObstacleDetector(drone_id=drone_id)
     mission = new MissionExecutor(drone_id=drone_id)
+    droneComms = new DroneComms(drone_id=drone_id);
 
     // Connect internal components
     // formation.position_command -> position 
@@ -151,6 +152,7 @@ reactor DroneNode(
 }
 
 main reactor DroneSwarm {
+    
     // Create drone instances
     drone1 = new DroneNode(drone_id=1, initial_x=0.0, initial_y=0.0, initial_z=10.0)
     drone2 = new DroneNode(drone_id=2, initial_x=10.0, initial_y=0.0, initial_z=10.0)
