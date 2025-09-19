@@ -36,7 +36,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Disable color diagnostics to avoid compatibility issues
-set(CMAKE_COLOR_DIAGNOSTICS ON)
+set(CMAKE_COLOR_DIAGNOSTICS OFF)
 
 # Remove any problematic color diagnostic flags
 string(REPLACE "-fcolor-diagnostics" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")

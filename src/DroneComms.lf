@@ -5,7 +5,7 @@ reactor DroneComms(
     communication_range: double = 100.0,
     encryption_enabled: bool = true
 ) {
-    private preamble {=
+    public preamble {=
         #include <queue>
         #include <set>
         #include <map>
@@ -30,7 +30,7 @@ reactor DroneComms(
     state current_position: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
     state drone_status: {= std::map<std::string, double> =}
     state active_neighbors: {= std::set<int> =}
-    state message_queue: {= std::queue<std::map<std::string, std::string>> =}
+    state message_queue:  {= std::queue<std::map<std::string, std::string>> =}
     state network_topology: {= std::map<int, std::vector<int>> =}
 
     // Communication metrics
@@ -47,10 +47,10 @@ reactor DroneComms(
     state mesh_update_interval: time = 2 s
 
     // Timers
-    timer broadcast_timer(0, broadcast_interval)
-    timer heartbeat_timer(0, heartbeat_interval)
-    timer discovery_timer(0, discovery_interval)
-    timer mesh_update_timer(0, mesh_update_interval)
+    timer broadcast_timer(0, 500 ms)
+    timer heartbeat_timer(0, 1 s)
+    timer discovery_timer(0, 5 s)
+    timer mesh_update_timer(0, 2 s)
     timer cleanup_timer(0, 10 s)
 
     // Initialize communication system
@@ -70,7 +70,7 @@ reactor DroneComms(
 
     // Handle outgoing messages
     reaction(outgoing_message) {=
-        auto message = outgoing_message.get();
+        auto message = *outgoing_message.get();
 
         if (message.find("recipient") != message.end() &&
             message.find("payload") != message.end()) {
@@ -99,12 +99,12 @@ reactor DroneComms(
 
     // Update position for range calculations
     reaction(position_update) {=
-        current_position = position_update.get();
+        current_position = *position_update.get();
     =}
 
     // Update drone status for health monitoring
     reaction(status_update) {=
-        drone_status = status_update.get();
+        drone_status = *status_update.get();
 
         // Update signal strength based on system health
         if (drone_status.find("health") != drone_status.end()) {
@@ -115,7 +115,7 @@ reactor DroneComms(
 
     // Handle emergency signals with priority
     reaction(emergency_signal) {=
-        std::string emergency = emergency_signal.get();
+        std::string emergency = *emergency_signal.get();
 
         std::cout << "Drone " << drone_id << ": EMERGENCY BROADCAST - " << emergency
                   << std::endl;
@@ -230,7 +230,7 @@ reactor DroneComms(
 
     // Handle mesh discovery updates
     reaction(mesh_discovery) {=
-        auto discovered_drones = mesh_discovery.get();
+        auto discovered_drones = *mesh_discovery.get();
 
         for (int discovered_id : discovered_drones) {
             if (discovered_id != drone_id) {
@@ -274,7 +274,7 @@ reactor DroneComms(
         }
     =}
 
-    method broadcastEmergency(uname: {= const std::map<std::string =}, emergency_msg: {= std::string>& =} ) {=
+    method broadcastEmergency(emergency_msg: {= const std::map<std::string, std::string>& =}) {=
         std::cout << "Drone " << drone_id << ": EMERGENCY BROADCAST to all drones!"
                     << std::endl;
 
