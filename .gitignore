@@ -1,3 +1,6 @@
+# Apple DStore
+*.DS_Store
+
 # Prerequisites
 *.d
 
