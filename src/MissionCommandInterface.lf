@@ -1,0 +1,106 @@
+target Cpp
+
+reactor MissionCommandInterface {
+    private preamble {=
+        #include <thread>
+        #include <string>
+        #include <iostream>
+        #include <sstream>
+        #include <algorithm>
+        #include <cctype>
+
+        static std::string trim_upper(std::string s) {
+            // strip leading/trailing whitespace
+            s.erase(0, s.find_first_not_of(" \t\r\n"));
+            s.erase(s.find_last_not_of(" \t\r\n") + 1);
+            // to uppercase
+            std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+            return s;
+        }
+    =}
+
+    // Physical action: triggered from the stdin-reading thread
+    physical action stdin_command: {= std::string =}
+
+    // Outputs routed to the appropriate swarm-level reactors
+    output mission_command:   {= std::string =}  // → MissionExecutor
+    output formation_change:  int                // → FormationController
+
+    // ── Startup: spawn stdin-reader thread ───────────────────────────────
+    reaction startup_cmd (startup) -> stdin_command {=
+        std::cout << "\n=== DroneSwarm — Interface de commande ===\n"
+                  << "  Missions  : PATROL  ESCORT  RECONNAISSANCE  SEARCH_RESCUE\n"
+                  << "              CARGO_DELIVERY  SURVEILLANCE  INTERCEPT\n"
+                  << "  Contrôle  : START  STOP  ABORT  PAUSE  RESUME  RTB\n"
+                  << "  Formation : FORMATION 0  (diamond)\n"
+                  << "              FORMATION 1  (line)\n"
+                  << "              FORMATION 2  (V-formation)\n"
+                  << "              FORMATION 3  (circle)\n"
+                  << "  Aide      : HELP\n"
+                  << "==========================================\n"
+                  << "> " << std::flush;
+
+        // Detached thread: reads stdin lines and schedules the physical action
+        // Capture stdin_command by reference: it is a reference to the
+        // PhysicalAction member of the reactor, whose lifetime matches
+        // the program, so the captured reference stays valid.
+        std::thread([&stdin_command]() {
+            std::string line;
+            while (std::getline(std::cin, line)) {
+                std::string cmd = trim_upper(line);
+                if (!cmd.empty()) {
+                    stdin_command.schedule(cmd);
+                } else {
+                    std::cout << "> " << std::flush;
+                }
+            }
+        }).detach();
+    =}
+
+    // ── Command handler ──────────────────────────────────────────────────
+    reaction cmd_handler (stdin_command) -> mission_command, formation_change {=
+        const std::string& cmd = *stdin_command.get();
+
+        if (cmd == "HELP") {
+            std::cout
+                << "  Missions  : PATROL  ESCORT  RECONNAISSANCE  SEARCH_RESCUE\n"
+                << "              CARGO_DELIVERY  SURVEILLANCE  INTERCEPT\n"
+                << "  Contrôle  : START  STOP  ABORT  PAUSE  RESUME  RTB\n"
+                << "  Formation : FORMATION 0..3\n";
+
+        } else if (cmd.rfind("FORMATION", 0) == 0) {
+            // Format: "FORMATION N"
+            std::istringstream iss(cmd);
+            std::string keyword;
+            int n = -1;
+            iss >> keyword >> n;
+            if (n >= 0 && n <= 3) {
+                static const char* names[] = {"diamond", "line", "V-formation", "circle"};
+                std::cout << "[FORMATION] → " << names[n] << "\n";
+                formation_change.set(n);
+            } else {
+                std::cout << "[ERR] Formation invalide. Utiliser FORMATION 0..3\n";
+            }
+
+        } else if (cmd == "PATROL"        || cmd == "ESCORT"          ||
+                   cmd == "RECONNAISSANCE"|| cmd == "SEARCH_RESCUE"   ||
+                   cmd == "CARGO_DELIVERY"|| cmd == "SURVEILLANCE"    ||
+                   cmd == "INTERCEPT"     || cmd == "START"           ||
+                   cmd == "STOP"          || cmd == "ABORT"           ||
+                   cmd == "PAUSE"         || cmd == "RESUME"          ||
+                   cmd == "RTB") {
+            std::cout << "[MISSION] → " << cmd << "\n";
+            mission_command.set(cmd);
+
+        } else {
+            std::cout << "[ERR] Commande inconnue : \"" << cmd
+                      << "\". Tapez HELP pour la liste.\n";
+        }
+
+        std::cout << "> " << std::flush;
+    =}
+
+    reaction shutdown_cmd (shutdown) {=
+        std::cout << "\n[INFO] Interface de commande arrêtée.\n";
+    =}
+}
