@@ -8,13 +8,14 @@ import ObstacleDetector from "ObstacleDetector.lf"
 import MissionExecutor from "MissionExecutor.lf"
 import DroneComms from "DroneComms.lf"
 import MissionCommandInterface from "MissionCommandInterface.lf"
+import SwarmVisualizer from "SwarmVisualizer.lf"
 
 reactor PositionAggregator(num_drones: int = 4) {
     // Multiport: one input slot per drone
     input[num_drones] positions: {= std::vector<double> =}
 
-    // Output port with aggregated positions
-    output aggregated_positions: {= std::map<int, std::vector<double>> =}
+    // Multiport: one slot per drone so the N→N connection to drones.neighbor_positions works
+    output[num_drones] aggregated_positions: {= std::map<int, std::vector<double>> =}
 
     // State to store all positions
     state all_positions: {= std::map<int, std::vector<double>> =}
@@ -32,7 +33,8 @@ reactor PositionAggregator(num_drones: int = 4) {
 
     reaction(aggregate_timer) -> aggregated_positions {=
         if (!all_positions.empty()) {
-            aggregated_positions.set(all_positions);
+            for (int i = 0; i < (int)aggregated_positions.size(); i++)
+                aggregated_positions[i].set(all_positions);
         }
     =}
 }
@@ -40,11 +42,10 @@ reactor PositionAggregator(num_drones: int = 4) {
 reactor DroneNode(
     bank_index: int = 0,   // automatically set by the bank mechanism (0-indexed)
     num_drones: int = 4,
-    initial_x: double = 0.0,
-    initial_y: double = 0.0,
     initial_z: double = 0.0
 ) {
     private preamble {=
+        #include <cmath>
         #include <iomanip>
         #include "uav_logging.hh"
     =}
@@ -60,11 +61,14 @@ reactor DroneNode(
 
     // Internal state
     state drone_id: int = {= bank_index + 1 =}  // 1-indexed drone ID derived from bank_index
-    state x: double = initial_x
-    state y: double = initial_y
+    state x: double = {= bank_index * 15.0 =}   // 15 m spacing along x-axis at startup
+    state y: double = 0.0
     state z: double = initial_z
+    state target_pos: {= std::vector<double> =} = {= {bank_index * 15.0, 0.0, initial_z} =}
+    state avoidance_force: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
     state velocity: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
     state mission_active: bool = false
+    state log_tick: int = 0    // periodic position log counter
 
     // Timer for periodic updates
     timer update_timer(0, 100 ms)
@@ -80,14 +84,11 @@ reactor DroneNode(
     obstacle.threat_alert -> threat_detected
     mission.mission_status -> status
 
-    // Formation control reaction
+    // Formation control reaction: update target, drone steers toward it smoothly
     reaction(formation_command) {=
         auto cmd = *formation_command.get();
         if (cmd.size() >= 3) {
-            // Update target position based on formation command
-            x = cmd[0];
-            y = cmd[1];
-            z = cmd[2];
+            target_pos = cmd;
         }
     =}
 
@@ -106,43 +107,73 @@ reactor DroneNode(
         }
     =}
 
-    // Periodic position update
+    // Periodic position update + propulsion
     reaction(update_timer) -> position {=
-        std::vector<double> current_pos = {x, y, z};
-        position.set(current_pos);
+        position.set({x, y, z});
 
-        // Simple movement simulation
-        if (mission_active) {
-            // Basic movement towards target with simple physics
-            double dt = 0.1; // 100ms in seconds
-            x += velocity[0] * dt;
-            y += velocity[1] * dt;
-            z += velocity[2] * dt;
+        if (!mission_active) return;
+
+        const double dt       = 0.1;   // 100 ms in seconds
+        const double max_speed = 5.0;  // m/s
+        const double kp       = 0.8;   // proportional gain
+
+        // Propulsion: P-controller toward target_pos
+        double dx = target_pos[0] - x;
+        double dy = target_pos[1] - y;
+        double dz = target_pos[2] - z;
+        double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+        if (dist > 0.1) {
+            double speed = std::min(kp * dist, max_speed);
+            velocity[0] = speed * dx / dist + avoidance_force[0];
+            velocity[1] = speed * dy / dist + avoidance_force[1];
+            velocity[2] = speed * dz / dist + avoidance_force[2];
+        } else {
+            // At target: only avoidance drift remains
+            velocity[0] = avoidance_force[0];
+            velocity[1] = avoidance_force[1];
+            velocity[2] = avoidance_force[2];
+        }
+
+        x += velocity[0] * dt;
+        y += velocity[1] * dt;
+        z += velocity[2] * dt;
+
+        // Log position every 2 s (20 ticks × 100 ms)
+        if (++log_tick >= 20) {
+            log_tick = 0;
+            double dx = target_pos[0] - x;
+            double dy = target_pos[1] - y;
+            double dz = target_pos[2] - z;
+            double dist_to_target = std::sqrt(dx*dx + dy*dy + dz*dz);
+            LF_INFO << "Drone " << drone_id
+                    << ": pos (" << std::fixed << std::setprecision(1)
+                    << x << ", " << y << ", " << z << ")"
+                    << " → target (" << target_pos[0] << ", " << target_pos[1] << ", " << target_pos[2] << ")"
+                    << " dist=" << std::setprecision(2) << dist_to_target << " m";
         }
     =}
 
-    // Neighbor position processing
+    // Neighbor position processing: compute avoidance force for next update_timer tick
     reaction(neighbor_positions) {=
         auto neighbors = *neighbor_positions.get();
+        avoidance_force = {0.0, 0.0, 0.0};
 
-        // Process neighbor positions for collision avoidance
         for (const auto& neighbor : neighbors) {
-    //        int neighbor_id = neighbor.first;
-            auto neighbor_pos = neighbor.second;
+            const auto& neighbor_pos = neighbor.second;
+            if (neighbor_pos.size() < 3) continue;
 
-            if (neighbor_pos.size() >= 3) {
-                double dx = neighbor_pos[0] - x;
-                double dy = neighbor_pos[1] - y;
-                double dz = neighbor_pos[2] - z;
-                double distance = sqrt(dx*dx + dy*dy + dz*dz);
+            // Vector pointing away from the neighbor
+            double dx = x - neighbor_pos[0];
+            double dy = y - neighbor_pos[1];
+            double dz = z - neighbor_pos[2];
+            double distance = std::sqrt(dx*dx + dy*dy + dz*dz);
 
-                // Collision avoidance: maintain minimum separation
-                if (distance < 5.0 && distance > 0.1) {
-                    double repulsion_force = 1.0 / (distance * distance);
-                    velocity[0] -= repulsion_force * dx / distance;
-                    velocity[1] -= repulsion_force * dy / distance;
-                    velocity[2] -= repulsion_force * dz / distance;
-                }
+            if (distance < 5.0 && distance > 0.1) {
+                double repulsion = 2.0 / (distance * distance);
+                avoidance_force[0] += repulsion * dx / distance;
+                avoidance_force[1] += repulsion * dy / distance;
+                avoidance_force[2] += repulsion * dz / distance;
             }
         }
     =}
@@ -173,10 +204,13 @@ main reactor DroneSwarm(num_drones: int = 4, log_level: int = 3) {
     swarm_formation = new FormationController(drone_id=0, swarm_size=num_drones) // 0 = leader
 
     // Mission coordinator
-    mission_coordinator = new MissionExecutor(drone_id=0)
+    mission_coordinator = new MissionExecutor(drone_id=0, swarm_size=num_drones)
 
     // Command interface: reads mission and formation commands from stdin
     cmd_interface = new MissionCommandInterface()
+
+    // Live 3-D trajectory visualizer (http://localhost:8080)
+    viz = new SwarmVisualizer(num_drones = num_drones)
 
     // Broadcast formation commands to all drones in the bank
     swarm_formation.position_command -> drones.formation_command
@@ -193,4 +227,8 @@ main reactor DroneSwarm(num_drones: int = 4, log_level: int = 3) {
     // Wire stdin commands to swarm-level controllers
     cmd_interface.mission_command  -> mission_coordinator.mission_command
     cmd_interface.formation_change -> swarm_formation.formation_change
+    cmd_interface.target_position  -> swarm_formation.leader_position
+
+    // Stream drone positions to the live browser visualizer
+    drones.position -> viz.positions
 }

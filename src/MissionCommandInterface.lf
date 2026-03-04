@@ -23,8 +23,9 @@ reactor MissionCommandInterface {
     physical action stdin_command: {= std::string =}
 
     // Outputs routed to the appropriate swarm-level reactors
-    output mission_command:   {= std::string =}  // → MissionExecutor
-    output formation_change:  int                // → FormationController
+    output mission_command:   {= std::string =}        // → MissionExecutor
+    output formation_change:  int                      // → FormationController
+    output target_position:   {= std::vector<double> =}  // → FormationController.leader_position
 
     // ── Startup: spawn stdin-reader thread ───────────────────────────────
     reaction startup_cmd (startup) -> stdin_command {=
@@ -36,6 +37,7 @@ reactor MissionCommandInterface {
                   << "              FORMATION 1  (line)\n"
                   << "              FORMATION 2  (V-formation)\n"
                   << "              FORMATION 3  (circle)\n"
+                  << "  Position  : TARGET x y z  (centre de formation, ex: TARGET 100 50 15)\n"
                   << "  Aide      : HELP\n"
                   << "==========================================\n"
                   << "> " << std::flush;
@@ -58,7 +60,7 @@ reactor MissionCommandInterface {
     =}
 
     // ── Command handler ──────────────────────────────────────────────────
-    reaction cmd_handler (stdin_command) -> mission_command, formation_change {=
+    reaction cmd_handler (stdin_command) -> mission_command, formation_change, target_position {=
         const std::string& cmd = *stdin_command.get();
 
         if (cmd == "HELP") {
@@ -66,7 +68,20 @@ reactor MissionCommandInterface {
                 << "  Missions  : PATROL  ESCORT  RECONNAISSANCE  SEARCH_RESCUE\n"
                 << "              CARGO_DELIVERY  SURVEILLANCE  INTERCEPT\n"
                 << "  Contrôle  : START  STOP  ABORT  PAUSE  RESUME  RTB\n"
-                << "  Formation : FORMATION 0..3\n";
+                << "  Formation : FORMATION 0..3\n"
+                << "  Position  : TARGET x y z  (ex: TARGET 100 50 15)\n";
+
+        } else if (cmd.rfind("TARGET", 0) == 0) {
+            std::istringstream iss(cmd);
+            std::string keyword;
+            double tx = 0.0, ty = 0.0, tz = 10.0;
+            iss >> keyword >> tx >> ty >> tz;
+            if (!iss.fail()) {
+                std::cout << "[TARGET] → (" << tx << ", " << ty << ", " << tz << ")\n";
+                target_position.set({tx, ty, tz});
+            } else {
+                std::cout << "[ERR] Format: TARGET x y z  (ex: TARGET 100 50 15)\n";
+            }
 
         } else if (cmd.rfind("FORMATION", 0) == 0) {
             // Format: "FORMATION N"

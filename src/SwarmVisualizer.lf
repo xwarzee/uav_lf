@@ -1,0 +1,166 @@
+target Cpp
+
+// Serves a live 3-D trajectory view in the browser.
+// HTTP on port 8080 (configurable):
+//   GET /        -> Three.js HTML page
+//   GET /events  -> Server-Sent Events stream (JSON positions at each update)
+//
+// HTML page is in swarm_viz_html.hh (raw string literal kept out of .lf files
+// to avoid LF parser issues with raw strings and JS single-quoted strings).
+reactor SwarmVisualizer(num_drones: int = 4, port: int = 8080) {
+    private preamble {=
+        #include <sys/socket.h>
+        #include <netinet/in.h>
+        #include <arpa/inet.h>
+        #include <unistd.h>
+        #include <thread>
+        #include <mutex>
+        #include <vector>
+        #include <sstream>
+        #include <iomanip>
+        #include <string>
+        #include <cstring>
+        #include <algorithm>
+        #include <atomic>
+        #include "uav_logging.hh"
+        #include "swarm_viz_html.hh"   // defines swarm_viz::HTML
+
+        // Shared state between LF reactions and server threads
+        // (extends the swarm_viz namespace opened in swarm_viz_html.hh)
+        namespace swarm_viz {
+            std::mutex        clients_mtx;
+            std::vector<int>  sse_clients;
+            std::atomic<bool> running{false};
+
+            // Send an SSE frame to all connected browsers; prune dead sockets.
+            inline void broadcast(const std::string& msg) {
+                std::lock_guard<std::mutex> lk(clients_mtx);
+                auto it = sse_clients.begin();
+                while (it != sse_clients.end()) {
+                    ssize_t n = ::send(*it, msg.c_str(), msg.size(), 0);
+                    if (n <= 0) { ::close(*it); it = sse_clients.erase(it); }
+                    else        { ++it; }
+                }
+            }
+        } // namespace swarm_viz
+    =}
+
+    input[num_drones] positions: {= std::vector<double> =}
+
+    state server_fd: int = -1
+
+    // ── Start the HTTP server in a background thread ──────────────────────
+    reaction startup_cmd (startup) {=
+        swarm_viz::running = true;
+
+        int sfd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (sfd < 0) { LF_ERROR << "SwarmVisualizer: socket() failed"; return; }
+
+        int opt = 1;
+        ::setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR,  &opt, sizeof(opt));
+        ::setsockopt(sfd, SOL_SOCKET, SO_NOSIGPIPE,  &opt, sizeof(opt)); // macOS
+
+        struct sockaddr_in addr{};
+        addr.sin_family      = AF_INET;
+        addr.sin_port        = htons(port);
+        addr.sin_addr.s_addr = INADDR_ANY;
+
+        if (::bind(sfd, (struct sockaddr*)&addr, sizeof(addr)) < 0 ||
+            ::listen(sfd, 16) < 0) {
+            LF_ERROR << "SwarmVisualizer: bind/listen failed on port " << port;
+            ::close(sfd);
+            return;
+        }
+        server_fd = sfd;
+        LF_INFO << "SwarmVisualizer: open http://localhost:" << port;
+
+        std::thread([sfd]() {
+            while (swarm_viz::running) {
+                int client = ::accept(sfd, nullptr, nullptr);
+                if (client < 0) break;
+
+                std::thread([client]() {
+                    char buf[2048]{};
+                    ssize_t n = ::recv(client, buf, sizeof(buf) - 1, 0);
+                    if (n <= 0) { ::close(client); return; }
+
+                    std::string req(buf, n);
+                    bool is_sse = (req.find("GET /events") != std::string::npos);
+
+                    if (is_sse) {
+                        const std::string hdr =
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: text/event-stream\r\n"
+                            "Cache-Control: no-cache\r\n"
+                            "Connection: keep-alive\r\n"
+                            "Access-Control-Allow-Origin: *\r\n\r\n";
+                        ::send(client, hdr.c_str(), hdr.size(), 0);
+
+                        { std::lock_guard<std::mutex> lk(swarm_viz::clients_mtx);
+                          swarm_viz::sse_clients.push_back(client); }
+
+                        // Keep alive: detect disconnection via select; send keepalive comment
+                        while (swarm_viz::running) {
+                            fd_set rds;
+                            FD_ZERO(&rds); FD_SET(client, &rds);
+                            struct timeval tv{15, 0};
+                            int r = ::select(client + 1, &rds, nullptr, nullptr, &tv);
+                            if (r > 0) break;  // client closed
+                            if (r < 0) break;  // error
+                            const std::string ka = ": ka\n\n";
+                            if (::send(client, ka.c_str(), ka.size(), 0) <= 0) break;
+                        }
+
+                        { std::lock_guard<std::mutex> lk(swarm_viz::clients_mtx);
+                          swarm_viz::sse_clients.erase(
+                            std::remove(swarm_viz::sse_clients.begin(),
+                                        swarm_viz::sse_clients.end(), client),
+                            swarm_viz::sse_clients.end()); }
+                        ::close(client);
+
+                    } else {
+                        // Serve HTML page for any other GET
+                        std::string resp =
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: text/html; charset=utf-8\r\n"
+                            "Content-Length: " + std::to_string(swarm_viz::HTML.size()) + "\r\n"
+                            "Connection: close\r\n\r\n" + swarm_viz::HTML;
+                        ::send(client, resp.c_str(), resp.size(), 0);
+                        ::close(client);
+                    }
+                }).detach();
+            }
+        }).detach();
+    =}
+
+    // ── On each position tick: build JSON and push to all browsers ────────
+    reaction update_drones_pos (positions) {=
+        std::ostringstream json;
+        json << std::fixed << std::setprecision(2);
+        json << "{\"drones\":[";
+        bool first = true;
+        for (int i = 0; i < (int)positions.size(); i++) {
+            if (!positions[i].is_present()) continue;
+            const auto& pos = *positions[i].get();
+            if (!first) json << ",";
+            json << "{\"id\":"  << (i + 1)
+                 << ",\"x\":"   << (pos.size() > 0 ? pos[0] : 0.0)
+                 << ",\"y\":"   << (pos.size() > 1 ? pos[1] : 0.0)
+                 << ",\"z\":"   << (pos.size() > 2 ? pos[2] : 0.0)
+                 << "}";
+            first = false;
+        }
+        json << "]}";
+        swarm_viz::broadcast("data: " + json.str() + "\n\n");
+    =}
+
+    // ── Cleanup ───────────────────────────────────────────────────────────
+    reaction shutdown_cmd (shutdown) {=
+        swarm_viz::running = false;
+        if (server_fd >= 0) { ::close(server_fd); server_fd = -1; }
+        std::lock_guard<std::mutex> lk(swarm_viz::clients_mtx);
+        for (int fd : swarm_viz::sse_clients) ::close(fd);
+        swarm_viz::sse_clients.clear();
+        LF_INFO << "SwarmVisualizer: server stopped";
+    =}
+}
