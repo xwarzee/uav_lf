@@ -21,46 +21,52 @@ skinparam arrow {
     FontColor #333333
 }
 
-title DroneNode — Structure interne d'un membre du bank\n(bank_index = i  →  drone_id = i + 1)
+title DroneNode — Internal structure of one bank member\n(bank_index = i  →  drone_id = i+1,  x₀ = i×15 m)
 
-' ── Ports d'entrée ─────────────────────────────────────────
+' ── Input ports ─────────────────────────────────────────────
 interface "formation_command\nvector<double>" as IN_FC
 interface "mission_update\nstring" as IN_MU
 interface "neighbor_positions\nmap<int, vector<double>>" as IN_NP
 
-' ── Ports de sortie ────────────────────────────────────────
+' ── Output ports ────────────────────────────────────────────
 interface "position\nvector<double>" as OUT_P
 interface "status\nstring" as OUT_ST
 interface "threat_detected\nbool" as OUT_TD
 
 package "DroneNode  «bank member»" {
 
-    component "FormationController\n──────────────\ndrone_id = i+1\nswarm_size = N\nformation: diamond/line/V/circle\n«timer 50 ms»" as FC
+    component "FormationController\n──────────────\ndrone_id = i+1\nswarm_size = N\n«timer 50 ms»" as FC
 
     component "ObstacleDetector\n──────────────\ndrone_id = i+1\ndetection_range = 50 m\nthreat_threshold = 15 m\n«timer 25 ms  (40 Hz)»" as OD
 
-    component "MissionExecutor\n──────────────\ndrone_id = i+1\nmissions: PATROL, ESCORT,\nRECON, SEARCH_RESCUE…\n«timer 100 ms + 1 s health»" as ME
+    component "MissionExecutor\n──────────────\ndrone_id = i+1\nswarm_size = 1\nmissions: PATROL, ESCORT…\n«timer 100 ms + 1 s health»" as ME
 
     component "DroneComms\n──────────────\ndrone_id = i+1\nrange = 100 m\nencryption = true\n«timers: 500 ms / 1 s / 2 s / 5 s / 10 s»" as DC
 
-    component "État interne\n──────────────\nx, y, z : double\nvelocity : vector<double>\nmission_active : bool\ndrone_id : int" as STATE
+    component "Internal State\n──────────────\nx = i×15, y=0, z=10  (initial)\ntarget_pos : vector<double>\navoidance_force : vector<double>\nvelocity : vector<double>\nmission_active : bool\ndrone_id : int" as STATE
+
+    component "Propulsion (update_timer 100 ms)\n──────────────\nif mission_active:\n  speed = min(kp×dist, 5 m/s)\n  velocity = speed×dir + avoidance_force\n  x,y,z += velocity × 0.1 s\npublish position" as PROP
 }
 
-' ── Connexions entrées ─────────────────────────────────────
-IN_FC  --> STATE : réaction\n→ met à jour x, y, z
-IN_MU  --> ME    : réaction\n→ START / STOP
-IN_NP  --> STATE : réaction\n→ collision avoidance\n(répulsion si dist < 5 m)
+' ── Input connections ────────────────────────────────────────
+IN_FC  --> STATE : reaction(formation_command)\n→ target_pos ← cmd
+IN_MU  --> ME    : mission_update\n→ START : mission_active=true, log position\n→ STOP  : mission_active=false
+IN_NP  --> STATE : reaction(neighbor_positions)\n→ avoidance_force ← Σ repulsions\n   (2/d² if 0.1 m < d < 5 m)
 
-' ── Connexions sorties ─────────────────────────────────────
+' ── Propulsion ──────────────────────────────────────────────
+STATE --> PROP : target_pos, avoidance_force
+
+' ── Output connections ──────────────────────────────────────
 OD --> OUT_TD : threat_alert
-ME --> OUT_ST : mission_status
-STATE --> OUT_P : update_timer 100 ms\n→ publie position courante
+ME --> OUT_ST : mission_status[1]
+PROP --> OUT_P : position {x, y, z}
 
-' ── Note sur la formation ──────────────────────────────────
+' ── Note on formation ───────────────────────────────────────
 note bottom of FC
-  position_command non connecté
-  (réservé : chaque drone reçoit
-   la commande de swarm_formation)
+  position_command not used
+  internally: formation target
+  comes from swarm_formation
+  (swarm level) via formation_command
 end note
 
 @enduml

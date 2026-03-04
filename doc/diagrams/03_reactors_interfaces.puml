@@ -8,24 +8,38 @@ skinparam class {
     FontSize 10
 }
 
-title Interfaces des réacteurs — Ports, paramètres et timers
+title Reactor Interfaces — Ports, Parameters and Timers
+
+class "MissionCommandInterface" <<reactor>> {
+    ' Detached thread: reads stdin, schedules physical action
+    ..Outputs..
+    + mission_command : string
+    + formation_change : int
+    + target_position : vector<double>
+    ..Commands..
+    ~ PATROL  ESCORT  RECONNAISSANCE
+    ~ SEARCH_RESCUE  SURVEILLANCE  INTERCEPT
+    ~ START  STOP  ABORT  PAUSE  RESUME  RTB
+    ~ FORMATION 0..3
+    ~ TARGET x y z
+}
 
 class "PositionAggregator" <<reactor>> {
-    ' Paramètres
+    ' Parameters
     + num_drones : int = 4
     ..Inputs..
     + positions[num_drones] : vector<double>
     ..Outputs..
-    + aggregated_positions : map<int, vector<double>>
+    + aggregated_positions[num_drones] : map<int, vector<double>>
     ..Timers..
     ~ aggregate_timer : 0, 50 ms
 }
 
 class "DroneNode" <<reactor / bank>> {
-    ' Paramètres
+    ' Parameters
     + bank_index : int = 0  «auto»
     + num_drones : int = 4
-    + initial_x/y/z : double = 0/0/10
+    + initial_z : double = 10.0
     ..Inputs..
     + formation_command : vector<double>
     + mission_update : string
@@ -36,13 +50,17 @@ class "DroneNode" <<reactor / bank>> {
     + threat_detected : bool
     ..State..
     ~ drone_id = bank_index + 1
-    ~ x, y, z, velocity, mission_active
+    ~ x = bank_index*15, y=0, z=initial_z
+    ~ target_pos : vector<double>
+    ~ avoidance_force : vector<double>
+    ~ velocity : vector<double>
+    ~ mission_active : bool
     ..Timers..
     ~ update_timer : 0, 100 ms
 }
 
 class "FormationController" <<reactor>> {
-    ' Paramètres
+    ' Parameters
     + drone_id : int = 0
     + formation_type : int = 0
     + swarm_size : int = 4
@@ -54,18 +72,21 @@ class "FormationController" <<reactor>> {
     + position_command[swarm_size] : vector<double>
     + formation_status : string
     ..State..
-    ~ current_formation, leader_pos
-    ~ formation_spacing = 10.0
-    ~ num_followers = swarm_size
-    ..Timers..
-    ~ formation_timer : 100 ms, 50 ms
-    ..Formations..
+    ~ current_formation, leader_pos = {0,0,10}
+    ~ formation_spacing = 10.0 m
+    ..Position computation (send_formation_pos)..
+    ~ for i in 0..N-1:
+    ~   position_command[i] =
+    ~     leader_pos + offsetFor(i+1, N)
+    ..Formation types..
     ~ 0 = Diamond  1 = Line
     ~ 2 = V-Formation  3 = Circle
+    ..Timers..
+    ~ formation_timer : 100 ms, 50 ms
 }
 
 class "ObstacleDetector" <<reactor>> {
-    ' Paramètres
+    ' Parameters
     + drone_id : int = 0
     + detection_range : double = 50.0
     + threat_threshold : double = 15.0
@@ -77,7 +98,7 @@ class "ObstacleDetector" <<reactor>> {
     + threat_alert : bool
     + avoidance_vector : vector<double>
     + obstacle_map : vector<vector<double>>
-    ..Niveaux de menace..
+    ..Threat levels..
     ~ 0=safe  1=caution
     ~ 2=danger  3=critical
     ..Timers..
@@ -85,8 +106,9 @@ class "ObstacleDetector" <<reactor>> {
 }
 
 class "MissionExecutor" <<reactor>> {
-    ' Paramètres
+    ' Parameters
     + drone_id : int = 0
+    + swarm_size : int = 1
     ..Inputs..
     + mission_command : string
     + waypoint_data : vector<vector<double>>
@@ -94,11 +116,15 @@ class "MissionExecutor" <<reactor>> {
     + obstacle_alert : bool
     + formation_ready : bool
     ..Outputs..
-    + mission_status : string
+    + mission_status[swarm_size] : string
     + target_waypoint : vector<double>
     + mission_complete : bool
     + emergency_abort : bool
-    ..Missions supportées..
+    ..mission_status values..
+    ~ "INITIALIZED"  "START"  "STOP"
+    ~ "PATROL"  "RTB"  ...
+    ~ "PATROL_PROGRESS_xx%"
+    ..Supported missions..
     ~ PATROL  ESCORT  RECONNAISSANCE
     ~ SEARCH_RESCUE  CARGO_DELIVERY
     ~ SURVEILLANCE  INTERCEPT  RTB
@@ -108,7 +134,7 @@ class "MissionExecutor" <<reactor>> {
 }
 
 class "DroneComms" <<reactor>> {
-    ' Paramètres
+    ' Parameters
     + drone_id : int = 0
     + communication_range : double = 100.0
     + encryption_enabled : bool = true
@@ -131,10 +157,41 @@ class "DroneComms" <<reactor>> {
     ~ cleanup_timer : 0, 10 s
 }
 
-' Composition
+class "SwarmVisualizer" <<reactor>> {
+    ' Embedded HTTP+SSE server (POSIX sockets)
+    ' HTML page in swarm_viz_html.hh
+    ' Parameters
+    + num_drones : int = 4
+    + port : int = 8080
+    ..Inputs..
+    + positions[num_drones] : vector<double>
+    ..HTTP endpoints..
+    ~ GET /        -> Three.js page
+    ~ GET /events  -> SSE JSON stream
+    ..SSE format..
+    ~ data: {"drones":[
+    ~   {"id":1,"x":10.0,"y":0.0,"z":10.0},
+    ~   ...]}
+    ..Three.js features..
+    ~ coloured spheres per drone
+    ~ trails (150 positions)
+    ~ live coordinate HUD
+    ~ OrbitControls
+}
+
+' Composition inside DroneNode
 DroneNode *-- FormationController : formation
 DroneNode *-- ObstacleDetector   : obstacle
 DroneNode *-- MissionExecutor    : mission
 DroneNode *-- DroneComms         : droneComms
+
+' DroneSwarm-level connections
+MissionCommandInterface ..> MissionExecutor    : mission_command
+MissionCommandInterface ..> FormationController : formation_change\ntarget_position
+FormationController     ..> DroneNode          : position_command[N]
+MissionExecutor         ..> DroneNode          : mission_status[N]
+DroneNode               ..> PositionAggregator : position[N]
+PositionAggregator      ..> DroneNode          : aggregated_positions[N]\n(after 10 ms)
+DroneNode               ..> SwarmVisualizer    : position[N] (fan-out)
 
 @enduml

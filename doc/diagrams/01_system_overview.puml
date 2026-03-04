@@ -17,27 +17,49 @@ skinparam arrow {
     FontColor #444444
 }
 
-title DroneSwarm — Vue d'ensemble\n«Lingua-Franca C++ target»
+title DroneSwarm — System Overview\n«Lingua-Franca C++ target»
 
-package "DroneSwarm  «main reactor»  (num_drones = N, défaut 4)" {
+package "DroneSwarm  «main reactor»  (num_drones=N, log_level=3)" {
 
-    component "FormationController\n──────────────\ndrone_id = 0  (leader)\nswarm_size = N\n«formation timer 50 ms»" as SF
+    component "MissionCommandInterface\n──────────────\nstdin → physical action\n«detached thread»\noutputs: mission_command\n         formation_change\n         target_position" as CI
 
-    component "MissionExecutor\n──────────────\ndrone_id = 0  (coordinateur)\n«update timer 100 ms»" as MC
+    component "FormationController\n──────────────\ndrone_id = 0  (leader)\nswarm_size = N\ninput  leader_position\noutput[N] position_command\n«formation timer 50 ms»" as SF
 
-    component "PositionAggregator\n──────────────\nnum_drones = N\n«aggregate timer 50 ms»" as PA
+    component "MissionExecutor\n──────────────\ndrone_id = 0  (coordinator)\nswarm_size = N\noutput[N] mission_status\n«update timer 100 ms»" as MC
+
+    component "PositionAggregator\n──────────────\nnum_drones = N\ninput[N] positions\noutput[N] aggregated_positions\n«aggregate timer 50 ms»" as PA
+
+    component "SwarmVisualizer\n──────────────\nnum_drones = N\nport = 8080\ninput[N] positions\nHTTP + SSE server\nhttp://localhost:8080" as VIZ
 
     package "DroneNode[N]  «bank»  bank_index = 0 .. N-1" {
-        component "DroneNode\n──────────────\ndrone_id = bank_index + 1\nnum_drones = N\n«update timer 100 ms»" as DN
+        component "DroneNode\n──────────────\ndrone_id = bank_index + 1\nx₀ = bank_index × 15 m\ntarget_pos, avoidance_force\n«P-controller 100 ms»" as DN
     }
 }
 
-SF -down-> DN  : «N → N multiport»\nposition_command : vector<double>
+CI -down-> MC  : mission_command\nstring
+CI -down-> SF  : formation_change\nint
+CI -down-> SF  : target_position\nvector<double>\n→ leader_position\n(formation centre)
 
-MC -down-> DN  : «broadcast 1 → N»\nmission_status : string
+SF -down-> DN  : «N → N multiport»\nposition_command[i] : vector<double>\n→ drone i target_pos
 
-DN -right-> PA : «N → N multiport»\nposition : vector<double>
+MC -down-> DN  : «N → N multiport»\nmission_status[i] : string\n(«START» / «STOP» / type)
 
-PA -left-> DN  : «broadcast 1 → N, after 10 ms»\naggregated_positions : map<int, vector<double>>
+DN -right-> PA : «N → N multiport»\nposition[i] : vector<double>
+
+PA -left-> DN  : «N → N multiport, after 10 ms»\naggregated_positions[i] : map<int,vector<double>>
+
+DN -down-> VIZ : «N → N multiport, fan-out»\nposition[i] : vector<double>
+
+note bottom of DN
+  Propulsion (mission_active):
+    velocity = P-ctrl(target_pos) + avoidance_force
+    x, y, z += velocity × 0.1 s
+end note
+
+note bottom of VIZ
+  Browser: http://localhost:8080
+  SSE JSON every 100 ms
+  Three.js: spheres + trails + HUD
+end note
 
 @enduml

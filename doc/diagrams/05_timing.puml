@@ -2,7 +2,7 @@
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName Helvetica
 
-title DroneSwarm — Diagramme de temporisation des timers\n(horizon = 200 ms)
+title DroneSwarm — Timer Timing Diagram\n(time window = 200 ms)
 
 clock "ObstacleDetector\nobstacle_timer (25 ms)" as OD_T with period 25
 clock "PositionAggregator\naggregate_timer (50 ms)" as PA_T with period 50

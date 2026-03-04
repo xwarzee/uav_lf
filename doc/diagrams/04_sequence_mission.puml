@@ -9,82 +9,120 @@ skinparam defaultFontName Helvetica
 skinparam noteBorderColor #F57F17
 skinparam noteBackgroundColor #FFF9C4
 
-title DroneSwarm — Scénario : démarrage de mission et évitement d'obstacle
+title DroneSwarm — Scenario: target, formation, mission start, propulsion and obstacle avoidance
 
-participant "MissionExecutor\n(coordinateur)" as MC
+participant "Operator\n(stdin)" as OP
+participant "MissionCommandInterface" as CI
+participant "MissionExecutor\n(coordinator, drone_id=0)" as MC
+participant "FormationController\n(leader, drone_id=0)" as SF
 participant "DroneNode[i]\n(bank member)" as DN
-participant "MissionExecutor\n(drone_i)" as ME
-participant "ObstacleDetector\n(drone_i)" as OD
 participant "PositionAggregator" as PA
-participant "FormationController\n(leader)" as SF
+participant "SwarmVisualizer\n(http://localhost:8080)" as VIZ
+participant "ObstacleDetector\n(drone_i)" as OD
 
 == Initialisation (startup) ==
 
-MC  -> MC  : startup\n→ mission_status = "INITIALIZED"
-SF  -> SF  : startup\n→ formation_initialized = true
-OD  -> OD  : startup\n→ obstacle list cleared
-ME  -> ME  : startup\n→ mission_status = "INITIALIZED"
+MC  -> MC  : startup → mission_status[N] = "INITIALIZED"\nbroadcast to all drones
+SF  -> SF  : startup → formation initialised\nleader_pos = {0, 0, 10}
+OD  -> OD  : startup → obstacle list cleared
+DN  -> DN  : initial state: x=i×15 m, y=0, z=10 m\ntarget_pos={i×15, 0, 10}
+VIZ -> VIZ : startup → HTTP server on :8080\naccept thread started
 
-== Phase 1 : Mise en formation ==
+== Phase 1: Target positioning and formation selection ==
 
-SF  -> SF  : formation_timer (50 ms)\n→ calculateFormationPosition()
-SF  ->> DN : position_command[N]\nvector<double> {x, y, z}
+OP  -> CI  : "TARGET 100 50 15"
+CI  -> SF  : target_position = {100, 50, 15}
+SF  -> SF  : reaction(leader_position)\n→ leader_pos ← {100, 50, 15}
 
-DN  -> DN  : réaction formation_command\n→ met à jour x, y, z cible
+OP  -> CI  : "FORMATION 3  (circle)"
+CI  -> SF  : formation_change = 3
+SF  -> SF  : current_formation ← 3 (Circle)
 
-DN  -> DN  : update_timer (100 ms)\n→ publie position courante
-DN  ->> PA : position : vector<double>
+note over SF : leader_pos = {100, 50, 15}\nformation = Circle, spacing = 10 m\nDrone 1 target: (110, 50, 15)\nDrone 2 target: (100, 60, 15)\nDrone 3 target:  (90, 50, 15)\nDrone 4 target: (100, 40, 15)
 
-PA  -> PA  : aggregate_timer (50 ms)\n→ agrège toutes les positions
-PA  -->> DN : aggregated_positions\nmap<int, vector<double>>\n(after 10 ms)
+== Phase 2: Formation computation (before START) ==
 
-DN  -> DN  : réaction neighbor_positions\n→ calcul répulsion si dist < 5 m
-
-== Phase 2 : Lancement de mission ==
-
-note over MC : commande "PATROL" reçue\nexternalement
-MC  -> MC  : setMissionType("PATROL")\ntimeout = 30 min, priority = 1
-MC  ->> DN : mission_status = "PATROL"
-
-DN  -> ME  : réaction mission_update("START")
-ME  -> ME  : startMission()\n→ active waypoints
-
-loop chaque 100 ms
-    ME  -> ME  : mission_update_timer\n→ updateMissionProgress()
-    ME  --> DN : mission_status\n"PATROL_PROGRESS_xx%"
-    DN  -> DN  : update_timer\n→ position publiée
+loop every 50 ms
+    SF  -> SF  : formation_timer\n→ for i in 0..N-1:\n    position_command[i] = leader_pos + circleOffsetFor(i+1, N)
+    SF  ->> DN : position_command[N]\n{x_formation_i, y_formation_i, z}
+    DN  -> DN  : reaction(formation_command)\n→ target_pos ← cmd
 end
 
-== Phase 3 : Détection d'obstacle ==
+note over DN : mission_active = false\ndrone remains stationary\n(no propulsion)
 
-note over OD : sensor_data reçu\n(distance = 8 m < threshold 15 m)
-OD  -> OD  : réaction sensor_data\n→ threat_level = 2 (DANGER)
+== Phase 3: Mission start ==
+
+OP  -> CI  : "SURVEILLANCE"
+CI  -> MC  : mission_command = "SURVEILLANCE"
+MC  -> MC  : setMissionType("SURVEILLANCE")
+
+OP  -> CI  : "START"
+CI  -> MC  : mission_command = "START"
+MC  -> MC  : startMission()
+MC  -> MC  : [INFO] "Swarm mission 'SURVEILLANCE' starting"
+MC  ->> DN : mission_status[N] = "START"
+
+DN  -> DN  : reaction(mission_update="START")\n→ mission_active = true\n[INFO] "Drone i: Mission started — position (x, y, z)"
+
+== Phase 4: Propulsion towards formation ==
+
+loop every 100 ms (mission_active = true)
+    DN  -> DN  : update_timer\n— P-controller towards target_pos:\n  speed = min(0.8 × dist, 5 m/s)\n  velocity = speed × dir + avoidance_force\n  x, y, z += velocity × 0.1 s
+    DN  ->> PA : position: {x, y, z}
+    DN  ->> VIZ : position: {x, y, z}
+end
+
+loop every 50 ms
+    PA  -> PA  : aggregate_timer\n→ map<drone_id, position>
+    PA  -->> DN : aggregated_positions[N]\n(after 10 ms)
+    DN  -> DN  : reaction(neighbor_positions)\n→ avoidance_force ← Σ repulsions\n  (2/d² if 0.1 m < d < 5 m)
+end
+
+loop every 100 ms
+    VIZ -> VIZ : reaction(positions)\n→ JSON SSE broadcast\n  data: {"drones":[{"id":i,"x":...},...]}
+end
+
+note over DN, VIZ : Drones converge towards\ntheir formation positions\naround (100, 50, 15).\nThe browser page displays\ntrajectories in 3-D in real time.
+
+== Phase 5: Obstacle detection ==
+
+note over OD : sensor_data received\n(distance = 8 m < threshold 15 m)
+OD  -> OD  : reaction(sensor_data)\n→ threat_level = 2 (DANGER)
 OD  --> DN : threat_alert = true
+OD  -> OD  : [WARN] "THREAT DETECTED at 8 m"
 
-DN  --> DN : threat_detected = true\n(sortie externe)
+DN  -> MC  : (via mission.obstacle_alert)
+MC  -> MC  : reaction(obstacle_alert)\n→ pauseMission()
+MC  ->> DN : mission_status[N] = "PAUSED"
+DN  -> DN  : mission_active stays true\nbut target_pos frozen
 
-ME  -> ME  : réaction obstacle_alert\n→ pauseMission()
-ME  --> DN : mission_status = "PAUSED"
+== Phase 6: Resume after clearance ==
 
-OD  -> OD  : obstacle_timer (25 ms)\n→ calculateAvoidanceVector()
-OD  --> DN : avoidance_vector\nvector<double>
-
-DN  -> DN  : réaction neighbor_positions\n→ répulsion renforcée
-
-== Phase 4 : Reprise après dégagement ==
-
-note over OD : obstacle disparu
-OD  -> OD  : avoidance_active = false\nthreat_level = 0
+note over OD : obstacle gone
+OD  -> OD  : avoidance_active = false, threat_level = 0
 OD  --> DN : threat_alert = false
+OD  -> OD  : [INFO] "Threat cleared"
 
-ME  -> ME  : resumeMission()
-ME  --> DN : mission_status = "ACTIVE"
+OP  -> CI  : "RESUME"
+CI  -> MC  : mission_command = "RESUME"
+MC  -> MC  : resumeMission()
+MC  ->> DN : mission_status[N] = "ACTIVE"
 
-== Phase 5 : Fin de mission / RTB ==
+== Phase 7: In-flight formation displacement ==
 
-ME  -> ME  : completeMission()
-ME  -> ME  : initializeRTBMission()\nhome_base = {0, 0, 10}
-ME  --> DN : mission_status = "RTB"
-ME  --> DN : target_waypoint = {0, 0, 10}
+OP  -> CI  : "TARGET 200 100 20"
+CI  -> SF  : target_position = {200, 100, 20}
+SF  -> SF  : leader_pos ← {200, 100, 20}
+SF  ->> DN : new formation positions\naround (200, 100, 20)
+DN  -> DN  : target_pos updated\npropulsion replanned
+
+== Phase 8: Mission end / RTB ==
+
+MC  -> MC  : completeMission()
+MC  -> MC  : initializeRTBMission()\nhome_base = {0, 0, 10}
+MC  ->> DN : mission_status[N] = "RTB"
+
+DN  -> DN  : target_pos ← updated via formation_command\n(or direct command)
+DN  -> DN  : propulsion towards base {0, 0, 10}
 
 @enduml
