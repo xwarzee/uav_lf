@@ -7,6 +7,7 @@ reactor MissionExecutor(
         #include <cmath>
         #include <algorithm>
         #include <chrono>
+        #include "uav_logging.hh"
     =}
 
     // Input ports
@@ -48,7 +49,7 @@ reactor MissionExecutor(
 
     // Initialize mission executor
     reaction(startup) -> mission_status {=
-        std::cout << "Mission Executor " << drone_id << " initialized" << std::endl;
+        LF_INFO << "Mission Executor " << drone_id << " initialized";
         std::string status = "INITIALIZED";
         mission_status.set(status);
 
@@ -58,25 +59,33 @@ reactor MissionExecutor(
     =}
 
     // Handle new mission commands
-    reaction(mission_command) -> mission_status, target_waypoint {=
+    reaction mission_cmd (mission_command) -> mission_status, target_waypoint {=
         std::string command = *mission_command.get();
 
         if (command == "START" && current_mission != "IDLE") {
             startMission();
+            LF_INFO << "Drone " << drone_id << ": Swarm mission '" << current_mission
+                    << "' starting — broadcasting START to all drones";
+            mission_status.set("START");
         } else if (command == "STOP" || command == "ABORT") {
             abortMission();
+            mission_status.set("STOP");
         } else if (command == "PAUSE") {
             pauseMission();
+            mission_status.set(current_mission);
         } else if (command == "RESUME") {
             resumeMission();
+            mission_status.set(current_mission);
         } else if (command == "RTB") {  // Return to Base
             initializeRTBMission();
+            mission_status.set(current_mission);
         } else if (std::find(available_missions.begin(), available_missions.end(), command)
                    != available_missions.end()) {
             setMissionType(command);
+            mission_status.set(current_mission);
+        } else {
+            mission_status.set(current_mission);
         }
-
-        mission_status.set(current_mission);
     =}
 
     // Handle waypoint updates
@@ -87,13 +96,13 @@ reactor MissionExecutor(
 
         if (!mission_waypoints.empty() && current_mission != "IDLE") {
             target_waypoint.set(mission_waypoints[0]);
-            std::cout << "Drone " << drone_id << ": " << mission_waypoints.size()
-                      << " waypoints loaded for mission: " << current_mission << std::endl;
+            LF_INFO << "Drone " << drone_id << ": " << mission_waypoints.size()
+                    << " waypoints loaded for mission: " << current_mission;
         }
     =}
 
     // Handle drone status updates
-    reaction(drone_status) {=
+    reaction drone_status_level (drone_status) {=
         auto status = *drone_status.get();
 
         if (status.find("battery") != status.end()) {
@@ -109,19 +118,17 @@ reactor MissionExecutor(
         // Check for critical levels
         if (battery_level < 20.0 || fuel_level < 15.0 || system_health < 50.0) {
             if (current_mission != "RTB" && current_mission != "EMERGENCY") {
-                std::cout << "Drone " << drone_id << ": Critical status detected, initiating RTB"
-                          << std::endl;
+                LF_WARN << "Drone " << drone_id << ": Critical status detected, initiating RTB";
                 initializeRTBMission();
             }
         }
     =}
 
     // Handle obstacle alerts
-    reaction(obstacle_alert) -> mission_status {=
+    reaction obstacle_detections (obstacle_alert) -> mission_status {=
         bool alert = *obstacle_alert.get();
         if (alert && current_mission != "IDLE") {
-            std::cout << "Drone " << drone_id << ": Obstacle detected, adapting mission"
-                      << std::endl;
+            LF_INFO << "Drone " << drone_id << ": Obstacle detected, adapting mission";
 
             // Pause mission execution until obstacle is cleared
             if (current_mission != "EMERGENCY" && current_mission != "RTB") {
@@ -131,7 +138,7 @@ reactor MissionExecutor(
     =}
 
     // Mission execution update
-    reaction(mission_update_timer) -> target_waypoint, mission_complete, mission_status {=
+    reaction mission_update(mission_update_timer) -> target_waypoint, mission_complete, mission_status {=
         if (current_mission == "IDLE" || current_mission == "PAUSED") {
             return;
         }
@@ -139,7 +146,7 @@ reactor MissionExecutor(
         // Check mission timeout
         auto current_time = get_elapsed_logical_time();
         if (current_time > mission_start_time + mission_timeout) {
-            std::cout << "Drone " << drone_id << ": Mission timeout, aborting" << std::endl;
+            LF_WARN << "Drone " << drone_id << ": Mission timeout, aborting";
             abortMission();
             return;
         }
@@ -157,9 +164,8 @@ reactor MissionExecutor(
             } else {
                 // Move to next waypoint
                 target_waypoint.set(mission_waypoints[current_waypoint_index]);
-                std::cout << "Drone " << drone_id << ": Advancing to waypoint "
-                          << current_waypoint_index + 1 << "/" << mission_waypoints.size()
-                          << std::endl;
+                LF_DEBUG << "Drone " << drone_id << ": Advancing to waypoint "
+                         << current_waypoint_index + 1 << "/" << mission_waypoints.size();
             }
         }
 
@@ -167,20 +173,19 @@ reactor MissionExecutor(
     =}
 
     // Health monitoring
-    reaction(health_check_timer) -> emergency_abort {=
+    reaction drone_healtch_check (health_check_timer) -> emergency_abort {=
         // Monitor critical systems
         if (battery_level < 5.0 || system_health < 20.0) {
-            std::cout << "Drone " << drone_id << ": EMERGENCY - Critical system failure"
-                      << std::endl;
+            LF_ERROR << "Drone " << drone_id << ": EMERGENCY - Critical system failure";
             emergency_abort.set(true);
             current_mission = "EMERGENCY";
         }
 
         // Log health status periodically
         if ((int)get_elapsed_logical_time().count() % 10000 == 0) {  // Every 10 seconds
-            std::cout << "Drone " << drone_id << " Health - Battery: " << battery_level
-                      << "%, Fuel: " << fuel_level << "%, System: " << system_health
-                      << "%" << std::endl;
+            LF_DEBUG << "Drone " << drone_id << " Health - Battery: " << battery_level
+                     << "%, Fuel: " << fuel_level << "%, System: " << system_health
+                     << "%";
         }
     =}
 
@@ -192,8 +197,7 @@ reactor MissionExecutor(
             current_waypoint_index = 0;
             mission_progress = 0.0;
 
-            std::cout << "Drone " << drone_id << ": Starting mission: "
-                        << current_mission << std::endl;
+            LF_INFO << "Drone " << drone_id << ": Starting mission: " << current_mission;
 
             // Set first waypoint as target
             if (!mission_waypoints.empty()) {
@@ -203,8 +207,7 @@ reactor MissionExecutor(
     =}
 
     method abortMission() {=
-        std::cout << "Drone " << drone_id << ": Mission aborted: " << current_mission
-                    << std::endl;
+        LF_INFO << "Drone " << drone_id << ": Mission aborted: " << current_mission;
         current_mission = "IDLE";
         mission_waypoints.clear();
         current_waypoint_index = 0;
@@ -213,23 +216,21 @@ reactor MissionExecutor(
 
     method pauseMission() {=
         if (current_mission != "IDLE") {
-            std::cout << "Drone " << drone_id << ": Mission paused: " << current_mission
-                        << std::endl;
+            LF_INFO << "Drone " << drone_id << ": Mission paused: " << current_mission;
             current_mission = "PAUSED";
         }
     =}
 
     method resumeMission() {=
         if (current_mission == "PAUSED") {
-            std::cout << "Drone " << drone_id << ": Mission resumed" << std::endl;
+            LF_INFO << "Drone " << drone_id << ": Mission resumed";
             // Resume previous mission - would need state tracking for this
             current_mission = "ACTIVE";
         }
     =}
 
     method completeMission() {=
-        std::cout << "Drone " << drone_id << ": Mission completed: " << current_mission
-                    << std::endl;
+        LF_INFO << "Drone " << drone_id << ": Mission completed: " << current_mission;
 
         mission_progress = 100.0;
         // In reaction: mission_complete.set(true);
@@ -240,8 +241,7 @@ reactor MissionExecutor(
 
     method setMissionType(mission_type: {= const std::string& =} ) {=
         current_mission = mission_type;
-        std::cout << "Drone " << drone_id << ": Mission set to: " << mission_type
-                    << std::endl;
+        LF_INFO << "Drone " << drone_id << ": Mission set to: " << mission_type;
 
         // Set mission-specific parameters
         
@@ -272,7 +272,7 @@ reactor MissionExecutor(
         mission_waypoints.push_back(home_base);
         current_waypoint_index = 0;
 
-        std::cout << "Drone " << drone_id << ": Returning to base" << std::endl;
+        LF_INFO << "Drone " << drone_id << ": Returning to base";
     =}
 
     method updateMissionProgress() {=

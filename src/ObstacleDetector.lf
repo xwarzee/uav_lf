@@ -9,6 +9,7 @@ reactor ObstacleDetector(
         #include <cmath>
         #include <vector>
         #include <algorithm>
+        #include "uav_logging.hh"
     =}
     // Input ports
     input sensor_data: {= std::vector<double> =}  // [distance, angle, elevation]
@@ -31,10 +32,10 @@ reactor ObstacleDetector(
     timer obstacle_timer(0, 25 ms)  // 40Hz processing rate
 
     // Initialize detector
-    reaction(startup) {=
-        std::cout << "Obstacle Detector " << drone_id << " initialized" << std::endl;
-        std::cout << "Detection range: " << detection_range << "m" << std::endl;
-        std::cout << "Threat threshold: " << threat_threshold << "m" << std::endl;
+    reaction start (startup) {=
+        LF_INFO  << "Obstacle Detector " << drone_id << " initialized";
+        LF_DEBUG << "Detection range: " << detection_range << "m";
+        LF_DEBUG << "Threat threshold: " << threat_threshold << "m";
 
         detected_obstacles.clear();
         threat_level = 0;
@@ -42,7 +43,7 @@ reactor ObstacleDetector(
     =}
 
     // Process sensor data (LIDAR, cameras, etc.)
-    reaction(sensor_data) -> threat_alert, obstacle_map {=
+    reaction detection (sensor_data) -> threat_alert, obstacle_map {=
         auto sensor_reading = *sensor_data.get();
         if (sensor_reading.size() >= 3) {
             double distance = sensor_reading[0];
@@ -83,8 +84,8 @@ reactor ObstacleDetector(
                     threat_level = 1; // Caution
                 }
 
-                std::cout << "THREAT DETECTED by Drone " << drone_id
-                          << " at distance: " << distance << "m" << std::endl;
+                LF_WARN << "THREAT DETECTED by Drone " << drone_id
+                        << " at distance: " << distance << "m";
             }
 
             // Update obstacle map
@@ -93,12 +94,12 @@ reactor ObstacleDetector(
     =}
 
     // Update drone position
-    reaction(drone_position) {=
+    reaction drone_pos (drone_position) {=
         current_position = *drone_position.get();
     =}
 
     // Process obstacle avoidance
-    reaction(obstacle_timer) -> avoidance_vector, threat_alert {=
+    reaction avoid_abstacle(obstacle_timer) -> avoidance_vector, threat_alert {=
         std::vector<double> avoidance = calculateAvoidanceVector();
 
         if (avoidance[0] != 0.0 || avoidance[1] != 0.0 || avoidance[2] != 0.0) {
@@ -123,7 +124,7 @@ reactor ObstacleDetector(
                 avoidance_active = false;
                 threat_level = 0;
                 threat_alert.set(false);
-                std::cout << "Drone " << drone_id << ": Threat cleared" << std::endl;
+                LF_INFO << "Drone " << drone_id << ": Threat cleared";
             }
         }
 
@@ -134,7 +135,7 @@ reactor ObstacleDetector(
     =}
 
     // Handle neighbor collision avoidance
-    reaction(neighbor_positions) -> avoidance_vector {=
+    reaction avoid_neighbor (neighbor_positions) -> avoidance_vector {=
         auto neighbors = *neighbor_positions.get();
         std::vector<double> collision_avoidance = {0.0, 0.0, 0.0};
 
@@ -243,8 +244,7 @@ reactor ObstacleDetector(
 
         // Only engage if critically close and other avoidance failed
         if (distance <= 2.0 && threat_level >= 3) {
-            std::cout << "Drone " << drone_id << ": ENGAGING THREAT at "
-                        << distance << "m" << std::endl;
+            LF_WARN << "Drone " << drone_id << ": ENGAGING THREAT at " << distance << "m";
 
             // In real implementation: activate weapons system
             // For simulation: assume successful engagement

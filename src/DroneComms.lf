@@ -12,6 +12,7 @@ reactor DroneComms(
         #include <chrono>
         #include <random>
         #include <iomanip>
+        #include "uav_logging.hh"
     =}
     // Input ports
     input outgoing_message: {= std::map<std::string, std::string> =}
@@ -55,9 +56,9 @@ reactor DroneComms(
 
     // Initialize communication system
     reaction(startup) -> network_status {=
-        std::cout << "Drone Communication System " << drone_id << " initialized" << std::endl;
-        std::cout << "Communication range: " << communication_range << "m" << std::endl;
-        std::cout << "Encryption: " << (encryption_enabled ? "ENABLED" : "DISABLED") << std::endl;
+        LF_INFO  << "Drone Communication System " << drone_id << " initialized";
+        LF_DEBUG << "Communication range: " << communication_range << "m";
+        LF_DEBUG << "Encryption: " << (encryption_enabled ? "ENABLED" : "DISABLED");
 
         active_neighbors.clear();
         network_topology.clear();
@@ -88,8 +89,8 @@ reactor DroneComms(
                     int recipient_id = std::stoi(recipient_str);
                     sendDirectMessage(recipient_id, payload);
                 } catch (const std::exception& e) {
-                    std::cout << "Drone " << drone_id << ": Invalid recipient ID: "
-                              << recipient_str << std::endl;
+                    LF_WARN << "Drone " << drone_id << ": Invalid recipient ID: "
+                            << recipient_str;
                 }
             }
 
@@ -117,8 +118,7 @@ reactor DroneComms(
     reaction(emergency_signal) {=
         std::string emergency = *emergency_signal.get();
 
-        std::cout << "Drone " << drone_id << ": EMERGENCY BROADCAST - " << emergency
-                  << std::endl;
+        LF_WARN << "Drone " << drone_id << ": EMERGENCY BROADCAST - " << emergency;
 
         // Create high-priority emergency message
         std::map<std::string, std::string> emergency_msg = {
@@ -178,7 +178,7 @@ reactor DroneComms(
     // Network discovery and mesh maintenance
     reaction(discovery_timer) -> network_status {=
         // Discover new drones in range
-        std::cout << "Drone " << drone_id << ": Network discovery scan" << std::endl;
+        LF_DEBUG << "Drone " << drone_id << ": Network discovery scan";
 
         // Simulate discovery of nearby drones
         discoverNearbyDrones();
@@ -195,10 +195,9 @@ reactor DroneComms(
         // Calculate and update packet loss rate
         calculatePacketLoss();
 
-        std::cout << "Drone " << drone_id << " Network Stats - Sent: " << packets_sent
-                  << ", Received: " << packets_received << ", Loss: "
-                  << std::fixed << std::setprecision(1) << packet_loss_rate << "%"
-                  << std::endl;
+        LF_DEBUG << "Drone " << drone_id << " Network Stats - Sent: " << packets_sent
+                 << ", Received: " << packets_received << ", Loss: "
+                 << std::fixed << std::setprecision(1) << packet_loss_rate << "%";
     =}
 
     // Cleanup old connections and data
@@ -218,8 +217,7 @@ reactor DroneComms(
             last_heartbeat.erase(inactive_id);
             network_topology.erase(inactive_id);
 
-            std::cout << "Drone " << drone_id << ": Removed inactive neighbor "
-                      << inactive_id << std::endl;
+            LF_INFO << "Drone " << drone_id << ": Removed inactive neighbor " << inactive_id;
         }
 
         // Clean old messages from queue
@@ -237,8 +235,7 @@ reactor DroneComms(
                 active_neighbors.insert(discovered_id);
                 last_heartbeat[discovered_id] = std::chrono::steady_clock::now();
 
-                std::cout << "Drone " << drone_id << ": Discovered drone "
-                          << discovered_id << std::endl;
+                LF_INFO << "Drone " << drone_id << ": Discovered drone " << discovered_id;
             }
         }
     =}
@@ -246,27 +243,26 @@ reactor DroneComms(
     // Helper methods
     
     method broadcastMessage(payload: {= const std::string& =}) {=
-        std::cout << "Drone " << drone_id << ": Broadcasting message: "
-                    << payload.substr(0, 50) << (payload.length() > 50 ? "..." : "")
-                    << std::endl;
+        LF_DEBUG << "Drone " << drone_id << ": Broadcasting message: "
+                 << payload.substr(0, 50) << (payload.length() > 50 ? "..." : "");
 
         // In real implementation: transmit via radio/WiFi
         packets_sent++;
     =}
 
     method sendToNeighbors(payload: {= const std::string& =}) {=
-        std::cout << "Drone " << drone_id << ": Sending to " << active_neighbors.size()
-                    << " neighbors: " << payload.substr(0, 30)
-                    << (payload.length() > 30 ? "..." : "") << std::endl;
+        LF_DEBUG << "Drone " << drone_id << ": Sending to " << active_neighbors.size()
+                 << " neighbors: " << payload.substr(0, 30)
+                 << (payload.length() > 30 ? "..." : "");
 
         packets_sent += active_neighbors.size();
     =}
 
     method sendDirectMessage( recipient_id: int, payload: {= const std::string& =}) {=
         if (active_neighbors.find(recipient_id) != active_neighbors.end()) {
-            std::cout << "Drone " << drone_id << ": Direct message to " << recipient_id
-                        << ": " << payload.substr(0, 30)
-                        << (payload.length() > 30 ? "..." : "") << std::endl;
+            LF_DEBUG << "Drone " << drone_id << ": Direct message to " << recipient_id
+                     << ": " << payload.substr(0, 30)
+                     << (payload.length() > 30 ? "..." : "");
             packets_sent++;
         } else {
             // Try routing through mesh network
@@ -275,8 +271,7 @@ reactor DroneComms(
     =}
 
     method broadcastEmergency(emergency_msg: {= const std::map<std::string, std::string>& =}) {=
-        std::cout << "Drone " << drone_id << ": EMERGENCY BROADCAST to all drones!"
-                    << std::endl;
+        LF_WARN << "Drone " << drone_id << ": EMERGENCY BROADCAST to all drones!";
 
         // Emergency messages get highest priority and multiple retransmissions
         for (int i = 0; i < 3; i++) {  // Transmit 3 times for reliability
@@ -287,12 +282,11 @@ reactor DroneComms(
     method routeMessage(target_id: int , payload: {= const std::string& =} ) {=
         // Simple routing: find path through network topology
         if (network_topology.find(target_id) != network_topology.end()) {
-            std::cout << "Drone " << drone_id << ": Routing message to " << target_id
-                        << " via mesh network" << std::endl;
+            LF_DEBUG << "Drone " << drone_id << ": Routing message to " << target_id
+                     << " via mesh network";
             packets_sent++;
         } else {
-            std::cout << "Drone " << drone_id << ": No route to drone " << target_id
-                        << std::endl;
+            LF_WARN << "Drone " << drone_id << ": No route to drone " << target_id;
         }
     =}
 
