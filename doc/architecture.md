@@ -40,7 +40,7 @@ Each drone is an instance of a **bank** of `DroneNode` reactors. Four subsystems
 ./bin/DroneSwarm --num_drones 6 --log_level 2
 ```
 
-The system overview diagram is available in `diagrams/01_system_overview.puml`.
+![System Overview](diagrams/images/01_system_overview.png)
 
 ---
 
@@ -237,6 +237,8 @@ obstacle   = ObstacleDetector(drone_id = bank_index+1)
 mission    = MissionExecutor(drone_id = bank_index+1, swarm_size = 1)
 droneComms = DroneComms(drone_id = bank_index+1)
 ```
+
+![DroneNode Internals](diagrams/images/02_drone_node_internals.png)
 
 ---
 
@@ -611,7 +613,7 @@ update_timer ──► │ reaction(update_timer)               │
 | DroneComms | `discovery_timer` | 0 | 5 s | 0.2 Hz |
 | DroneComms | `cleanup_timer` | 0 | 10 s | 0.1 Hz |
 
-The timing diagram is available in `diagrams/05_timing.puml`.
+![Timer Timing Diagram](diagrams/images/05_timing.png)
 
 ---
 
@@ -740,23 +742,31 @@ This **fan-out** pattern allows multiple consumers to be fed from the same sourc
 
 ## 10. Diagrams
 
-| File | Content | Status |
-|------|---------|--------|
-| `diagrams/01_system_overview.puml` | Overview: DroneSwarm reactors and connections | Updated: added `viz`, `target_position` and `viz.positions` connections |
-| `diagrams/02_drone_node_internals.puml` | Internal structure of one DroneNode (states, reactions, subsystems) | Updated |
-| `diagrams/03_reactors_interfaces.puml` | Full interfaces of all reactors | Updated: `target_position` port in MissionCommandInterface, `leader_position` port in FormationController, full SwarmVisualizer interface |
-| `diagrams/04_sequence_mission.puml` | Scenario: mission start → propulsion → obstacle → RTB | Updated |
-| `diagrams/05_timing.puml` | Timer timing diagram | Unchanged |
-
-To generate PNG images from `.puml` files:
+PNG images are pre-generated in `diagrams/images/`. To regenerate them:
 
 ```bash
-# With PlantUML installed locally
-plantuml doc/diagrams/*.puml
-
-# With Docker
-docker run --rm -v $(pwd):/data plantuml/plantuml doc/diagrams/*.puml
+java -jar plantuml-bsd-1.2026.2.jar -o images doc/diagrams/*.puml
 ```
+
+### System Overview
+
+![System Overview](diagrams/images/01_system_overview.png)
+
+### DroneNode Internals
+
+![DroneNode Internals](diagrams/images/02_drone_node_internals.png)
+
+### Reactor Interfaces
+
+![Reactor Interfaces](diagrams/images/03_reactors_interfaces.png)
+
+### Mission Sequence
+
+![Mission Sequence](diagrams/images/04_sequence_mission.png)
+
+### Timer Timing
+
+![Timer Timing](diagrams/images/05_timing.png)
 
 ---
 
