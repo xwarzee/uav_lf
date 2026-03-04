@@ -217,7 +217,7 @@ reactor DroneComms(
             last_heartbeat.erase(inactive_id);
             network_topology.erase(inactive_id);
 
-            LF_INFO << "Drone " << drone_id << ": Removed inactive neighbor " << inactive_id;
+            LF_DEBUG << "Drone " << drone_id << ": Removed inactive neighbor " << inactive_id;
         }
 
         // Clean old messages from queue
@@ -235,7 +235,7 @@ reactor DroneComms(
                 active_neighbors.insert(discovered_id);
                 last_heartbeat[discovered_id] = std::chrono::steady_clock::now();
 
-                LF_INFO << "Drone " << drone_id << ": Discovered drone " << discovered_id;
+                LF_DEBUG << "Drone " << drone_id << ": Discovered drone " << discovered_id;
             }
         }
     =}
