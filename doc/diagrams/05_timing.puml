@@ -1,0 +1,17 @@
+@startuml 05_timing
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Helvetica
+
+title DroneSwarm — Diagramme de temporisation des timers\n(horizon = 200 ms)
+
+clock "ObstacleDetector\nobstacle_timer (25 ms)" as OD_T with period 25
+clock "PositionAggregator\naggregate_timer (50 ms)" as PA_T with period 50
+clock "FormationController\nformation_timer (50 ms, offset 100 ms)" as FC_T with period 50 offset 100
+clock "DroneNode\nupdate_timer (100 ms)" as DN_T with period 100
+clock "MissionExecutor\nmission_update_timer (100 ms)" as ME_T with period 100
+clock "DroneComms\nbroadcast_timer (500 ms)" as DC_BT with period 500
+
+@0
+@200
+
+@enduml

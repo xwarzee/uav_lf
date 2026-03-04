@@ -1,0 +1,140 @@
+@startuml 03_reactors_interfaces
+skinparam classBackgroundColor #F0F4FF
+skinparam classBorderColor #3355AA
+skinparam classHeaderBackgroundColor #C5CAE9
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Helvetica
+skinparam class {
+    FontSize 10
+}
+
+title Interfaces des réacteurs — Ports, paramètres et timers
+
+class "PositionAggregator" <<reactor>> {
+    ' Paramètres
+    + num_drones : int = 4
+    ..Inputs..
+    + positions[num_drones] : vector<double>
+    ..Outputs..
+    + aggregated_positions : map<int, vector<double>>
+    ..Timers..
+    ~ aggregate_timer : 0, 50 ms
+}
+
+class "DroneNode" <<reactor / bank>> {
+    ' Paramètres
+    + bank_index : int = 0  «auto»
+    + num_drones : int = 4
+    + initial_x/y/z : double = 0/0/10
+    ..Inputs..
+    + formation_command : vector<double>
+    + mission_update : string
+    + neighbor_positions : map<int, vector<double>>
+    ..Outputs..
+    + position : vector<double>
+    + status : string
+    + threat_detected : bool
+    ..State..
+    ~ drone_id = bank_index + 1
+    ~ x, y, z, velocity, mission_active
+    ..Timers..
+    ~ update_timer : 0, 100 ms
+}
+
+class "FormationController" <<reactor>> {
+    ' Paramètres
+    + drone_id : int = 0
+    + formation_type : int = 0
+    + swarm_size : int = 4
+    ..Inputs..
+    + leader_position : vector<double>
+    + formation_change : int
+    + swarm_size_update : int
+    ..Outputs..
+    + position_command[swarm_size] : vector<double>
+    + formation_status : string
+    ..State..
+    ~ current_formation, leader_pos
+    ~ formation_spacing = 10.0
+    ~ num_followers = swarm_size
+    ..Timers..
+    ~ formation_timer : 100 ms, 50 ms
+    ..Formations..
+    ~ 0 = Diamond  1 = Line
+    ~ 2 = V-Formation  3 = Circle
+}
+
+class "ObstacleDetector" <<reactor>> {
+    ' Paramètres
+    + drone_id : int = 0
+    + detection_range : double = 50.0
+    + threat_threshold : double = 15.0
+    ..Inputs..
+    + sensor_data : vector<double>
+    + drone_position : vector<double>
+    + neighbor_positions : map<int, vector<double>>
+    ..Outputs..
+    + threat_alert : bool
+    + avoidance_vector : vector<double>
+    + obstacle_map : vector<vector<double>>
+    ..Niveaux de menace..
+    ~ 0=safe  1=caution
+    ~ 2=danger  3=critical
+    ..Timers..
+    ~ obstacle_timer : 0, 25 ms  «40 Hz»
+}
+
+class "MissionExecutor" <<reactor>> {
+    ' Paramètres
+    + drone_id : int = 0
+    ..Inputs..
+    + mission_command : string
+    + waypoint_data : vector<vector<double>>
+    + drone_status : map<string, double>
+    + obstacle_alert : bool
+    + formation_ready : bool
+    ..Outputs..
+    + mission_status : string
+    + target_waypoint : vector<double>
+    + mission_complete : bool
+    + emergency_abort : bool
+    ..Missions supportées..
+    ~ PATROL  ESCORT  RECONNAISSANCE
+    ~ SEARCH_RESCUE  CARGO_DELIVERY
+    ~ SURVEILLANCE  INTERCEPT  RTB
+    ..Timers..
+    ~ mission_update_timer : 100 ms, 100 ms
+    ~ health_check_timer : 0, 1 s
+}
+
+class "DroneComms" <<reactor>> {
+    ' Paramètres
+    + drone_id : int = 0
+    + communication_range : double = 100.0
+    + encryption_enabled : bool = true
+    ..Inputs..
+    + outgoing_message : map<string, string>
+    + position_update : vector<double>
+    + status_update : map<string, double>
+    + emergency_signal : string
+    + mesh_discovery : vector<int>
+    ..Outputs..
+    + incoming_message : map<string, string>
+    + neighbor_positions : map<int, vector<double>>
+    + network_status : string
+    + swarm_health : map<int, double>
+    ..Timers..
+    ~ broadcast_timer : 0, 500 ms
+    ~ heartbeat_timer : 0, 1 s
+    ~ mesh_update_timer : 0, 2 s
+    ~ discovery_timer : 0, 5 s
+    ~ cleanup_timer : 0, 10 s
+}
+
+' Composition
+DroneNode *-- FormationController : formation
+DroneNode *-- ObstacleDetector   : obstacle
+DroneNode *-- MissionExecutor    : mission
+DroneNode *-- DroneComms         : droneComms
+
+@enduml

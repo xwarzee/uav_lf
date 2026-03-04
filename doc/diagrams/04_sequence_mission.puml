@@ -1,0 +1,90 @@
+@startuml 04_sequence_mission
+skinparam sequenceArrowThickness 1.5
+skinparam sequenceParticipantBackgroundColor #E3F2FD
+skinparam sequenceParticipantBorderColor #1565C0
+skinparam sequenceLifeLineBorderColor #90CAF9
+skinparam sequenceGroupBackgroundColor #F3E5F5
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Helvetica
+skinparam noteBorderColor #F57F17
+skinparam noteBackgroundColor #FFF9C4
+
+title DroneSwarm — Scénario : démarrage de mission et évitement d'obstacle
+
+participant "MissionExecutor\n(coordinateur)" as MC
+participant "DroneNode[i]\n(bank member)" as DN
+participant "MissionExecutor\n(drone_i)" as ME
+participant "ObstacleDetector\n(drone_i)" as OD
+participant "PositionAggregator" as PA
+participant "FormationController\n(leader)" as SF
+
+== Initialisation (startup) ==
+
+MC  -> MC  : startup\n→ mission_status = "INITIALIZED"
+SF  -> SF  : startup\n→ formation_initialized = true
+OD  -> OD  : startup\n→ obstacle list cleared
+ME  -> ME  : startup\n→ mission_status = "INITIALIZED"
+
+== Phase 1 : Mise en formation ==
+
+SF  -> SF  : formation_timer (50 ms)\n→ calculateFormationPosition()
+SF  ->> DN : position_command[N]\nvector<double> {x, y, z}
+
+DN  -> DN  : réaction formation_command\n→ met à jour x, y, z cible
+
+DN  -> DN  : update_timer (100 ms)\n→ publie position courante
+DN  ->> PA : position : vector<double>
+
+PA  -> PA  : aggregate_timer (50 ms)\n→ agrège toutes les positions
+PA  -->> DN : aggregated_positions\nmap<int, vector<double>>\n(after 10 ms)
+
+DN  -> DN  : réaction neighbor_positions\n→ calcul répulsion si dist < 5 m
+
+== Phase 2 : Lancement de mission ==
+
+note over MC : commande "PATROL" reçue\nexternalement
+MC  -> MC  : setMissionType("PATROL")\ntimeout = 30 min, priority = 1
+MC  ->> DN : mission_status = "PATROL"
+
+DN  -> ME  : réaction mission_update("START")
+ME  -> ME  : startMission()\n→ active waypoints
+
+loop chaque 100 ms
+    ME  -> ME  : mission_update_timer\n→ updateMissionProgress()
+    ME  --> DN : mission_status\n"PATROL_PROGRESS_xx%"
+    DN  -> DN  : update_timer\n→ position publiée
+end
+
+== Phase 3 : Détection d'obstacle ==
+
+note over OD : sensor_data reçu\n(distance = 8 m < threshold 15 m)
+OD  -> OD  : réaction sensor_data\n→ threat_level = 2 (DANGER)
+OD  --> DN : threat_alert = true
+
+DN  --> DN : threat_detected = true\n(sortie externe)
+
+ME  -> ME  : réaction obstacle_alert\n→ pauseMission()
+ME  --> DN : mission_status = "PAUSED"
+
+OD  -> OD  : obstacle_timer (25 ms)\n→ calculateAvoidanceVector()
+OD  --> DN : avoidance_vector\nvector<double>
+
+DN  -> DN  : réaction neighbor_positions\n→ répulsion renforcée
+
+== Phase 4 : Reprise après dégagement ==
+
+note over OD : obstacle disparu
+OD  -> OD  : avoidance_active = false\nthreat_level = 0
+OD  --> DN : threat_alert = false
+
+ME  -> ME  : resumeMission()
+ME  --> DN : mission_status = "ACTIVE"
+
+== Phase 5 : Fin de mission / RTB ==
+
+ME  -> ME  : completeMission()
+ME  -> ME  : initializeRTBMission()\nhome_base = {0, 0, 10}
+ME  --> DN : mission_status = "RTB"
+ME  --> DN : target_waypoint = {0, 0, 10}
+
+@enduml

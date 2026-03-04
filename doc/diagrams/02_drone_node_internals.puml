@@ -1,0 +1,66 @@
+@startuml 02_drone_node_internals
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Helvetica
+skinparam component {
+    BackgroundColor #E8F5E9
+    BorderColor #388E3C
+    FontSize 10
+}
+skinparam interface {
+    BackgroundColor #FFF9C4
+    BorderColor #F9A825
+}
+skinparam package {
+    BackgroundColor #F9FBE7
+    BorderColor #558B2F
+}
+skinparam arrow {
+    Color #555555
+    FontSize 9
+    FontColor #333333
+}
+
+title DroneNode — Structure interne d'un membre du bank\n(bank_index = i  →  drone_id = i + 1)
+
+' ── Ports d'entrée ─────────────────────────────────────────
+interface "formation_command\nvector<double>" as IN_FC
+interface "mission_update\nstring" as IN_MU
+interface "neighbor_positions\nmap<int, vector<double>>" as IN_NP
+
+' ── Ports de sortie ────────────────────────────────────────
+interface "position\nvector<double>" as OUT_P
+interface "status\nstring" as OUT_ST
+interface "threat_detected\nbool" as OUT_TD
+
+package "DroneNode  «bank member»" {
+
+    component "FormationController\n──────────────\ndrone_id = i+1\nswarm_size = N\nformation: diamond/line/V/circle\n«timer 50 ms»" as FC
+
+    component "ObstacleDetector\n──────────────\ndrone_id = i+1\ndetection_range = 50 m\nthreat_threshold = 15 m\n«timer 25 ms  (40 Hz)»" as OD
+
+    component "MissionExecutor\n──────────────\ndrone_id = i+1\nmissions: PATROL, ESCORT,\nRECON, SEARCH_RESCUE…\n«timer 100 ms + 1 s health»" as ME
+
+    component "DroneComms\n──────────────\ndrone_id = i+1\nrange = 100 m\nencryption = true\n«timers: 500 ms / 1 s / 2 s / 5 s / 10 s»" as DC
+
+    component "État interne\n──────────────\nx, y, z : double\nvelocity : vector<double>\nmission_active : bool\ndrone_id : int" as STATE
+}
+
+' ── Connexions entrées ─────────────────────────────────────
+IN_FC  --> STATE : réaction\n→ met à jour x, y, z
+IN_MU  --> ME    : réaction\n→ START / STOP
+IN_NP  --> STATE : réaction\n→ collision avoidance\n(répulsion si dist < 5 m)
+
+' ── Connexions sorties ─────────────────────────────────────
+OD --> OUT_TD : threat_alert
+ME --> OUT_ST : mission_status
+STATE --> OUT_P : update_timer 100 ms\n→ publie position courante
+
+' ── Note sur la formation ──────────────────────────────────
+note bottom of FC
+  position_command non connecté
+  (réservé : chaque drone reçoit
+   la commande de swarm_formation)
+end note
+
+@enduml

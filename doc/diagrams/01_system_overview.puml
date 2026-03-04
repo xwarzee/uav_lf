@@ -1,0 +1,43 @@
+@startuml 01_system_overview
+skinparam componentStyle rectangle
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Helvetica
+skinparam component {
+    BackgroundColor #DDEEFF
+    BorderColor #336699
+    FontSize 11
+}
+skinparam package {
+    BackgroundColor #F8F8FF
+    BorderColor #6688AA
+}
+skinparam arrow {
+    Color #336699
+    FontSize 10
+    FontColor #444444
+}
+
+title DroneSwarm — Vue d'ensemble\n«Lingua-Franca C++ target»
+
+package "DroneSwarm  «main reactor»  (num_drones = N, défaut 4)" {
+
+    component "FormationController\n──────────────\ndrone_id = 0  (leader)\nswarm_size = N\n«formation timer 50 ms»" as SF
+
+    component "MissionExecutor\n──────────────\ndrone_id = 0  (coordinateur)\n«update timer 100 ms»" as MC
+
+    component "PositionAggregator\n──────────────\nnum_drones = N\n«aggregate timer 50 ms»" as PA
+
+    package "DroneNode[N]  «bank»  bank_index = 0 .. N-1" {
+        component "DroneNode\n──────────────\ndrone_id = bank_index + 1\nnum_drones = N\n«update timer 100 ms»" as DN
+    }
+}
+
+SF -down-> DN  : «N → N multiport»\nposition_command : vector<double>
+
+MC -down-> DN  : «broadcast 1 → N»\nmission_status : string
+
+DN -right-> PA : «N → N multiport»\nposition : vector<double>
+
+PA -left-> DN  : «broadcast 1 → N, after 10 ms»\naggregated_positions : map<int, vector<double>>
+
+@enduml
