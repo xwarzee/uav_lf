@@ -1,61 +1,54 @@
 target Cpp {
-    cmake-include: "../drone_math.cmake"
+    cmake-include: "../drone_math.cmake",
+    logging: INFO
 }
 
 import FormationController from "FormationController.lf"
 import ObstacleDetector from "ObstacleDetector.lf"
 import MissionExecutor from "MissionExecutor.lf"
 import DroneComms from "DroneComms.lf"
+import MissionCommandInterface from "MissionCommandInterface.lf"
 
-reactor PositionAggregator {
-    // Input ports for each drone position
-    input pos1: {= std::vector<double> =}
-    input pos2: {= std::vector<double> =}
-    input pos3: {= std::vector<double> =}
-    input pos4: {= std::vector<double> =}
+reactor PositionAggregator(num_drones: int = 4) {
+    // Multiport: one input slot per drone
+    input[num_drones] positions: {= std::vector<double> =}
 
     // Output port with aggregated positions
     output aggregated_positions: {= std::map<int, std::vector<double>> =}
 
     // State to store all positions
-    state positions: {= std::map<int, std::vector<double>> =}
+    state all_positions: {= std::map<int, std::vector<double>> =}
 
     // Timer to periodically send aggregated data
     timer aggregate_timer(0, 50 ms)
 
-    reaction(pos1) {=
-        auto pos = *pos1.get();
-        positions[1] = pos;
-    =}
-
-    reaction(pos2) {=
-        auto pos = *pos2.get();
-        positions[2] = pos;
-    =}
-
-    reaction(pos3) {=
-        auto pos = *pos3.get();
-        positions[3] = pos;
-    =}
-
-    reaction(pos4) {=
-        auto pos = *pos4.get();
-        positions[4] = pos;
+    reaction(positions) {=
+        for (int i = 0; i < positions.size(); i++) {
+            if (positions[i].is_present()) {
+                all_positions[i + 1] = *positions[i].get();
+            }
+        }
     =}
 
     reaction(aggregate_timer) -> aggregated_positions {=
-        if (!positions.empty()) {
-            aggregated_positions.set(positions);
+        if (!all_positions.empty()) {
+            aggregated_positions.set(all_positions);
         }
     =}
 }
 
 reactor DroneNode(
-    drone_id: int = 0,
+    bank_index: int = 0,   // automatically set by the bank mechanism (0-indexed)
+    num_drones: int = 4,
     initial_x: double = 0.0,
     initial_y: double = 0.0,
     initial_z: double = 0.0
 ) {
+    private preamble {=
+        #include <iomanip>
+        #include "uav_logging.hh"
+    =}
+
     // Communication ports
     input formation_command: {= std::vector<double> =}
     input mission_update: {= std::string =}
@@ -66,6 +59,7 @@ reactor DroneNode(
     output threat_detected: {= bool =}
 
     // Internal state
+    state drone_id: int = {= bank_index + 1 =}  // 1-indexed drone ID derived from bank_index
     state x: double = initial_x
     state y: double = initial_y
     state z: double = initial_z
@@ -76,13 +70,13 @@ reactor DroneNode(
     timer update_timer(0, 100 ms)
 
     // Instantiate subsystems
-    formation = new FormationController(drone_id=drone_id)
-    obstacle = new ObstacleDetector(drone_id=drone_id)
-    mission = new MissionExecutor(drone_id=drone_id)
-    droneComms = new DroneComms(drone_id=drone_id);
+    formation = new FormationController(drone_id = {= bank_index + 1 =}, swarm_size = num_drones)
+    obstacle = new ObstacleDetector(drone_id = {= bank_index + 1 =})
+    mission = new MissionExecutor(drone_id = {= bank_index + 1 =})
+    droneComms = new DroneComms(drone_id = {= bank_index + 1 =});
 
     // Connect internal components
-    // formation.position_command -> position 
+    // formation.position_command -> position
     obstacle.threat_alert -> threat_detected
     mission.mission_status -> status
 
@@ -102,10 +96,13 @@ reactor DroneNode(
         std::string update = *mission_update.get();
         if (update == "START") {
             mission_active = true;
-            std::cout << "Drone " << drone_id << ": Mission started" << std::endl;
+            LF_INFO << "Drone " << drone_id
+                    << ": Mission started — position ("
+                    << std::fixed << std::setprecision(2)
+                    << x << ", " << y << ", " << z << ")";
         } else if (update == "STOP") {
             mission_active = false;
-            std::cout << "Drone " << drone_id << ": Mission stopped" << std::endl;
+            LF_INFO << "Drone " << drone_id << ": Mission stopped";
         }
     =}
 
@@ -151,44 +148,49 @@ reactor DroneNode(
     =}
 }
 
-main reactor DroneSwarm {
-    
-    // Create drone instances
-    drone1 = new DroneNode(drone_id=1, initial_x=0.0, initial_y=0.0, initial_z=10.0)
-    drone2 = new DroneNode(drone_id=2, initial_x=10.0, initial_y=0.0, initial_z=10.0)
-    drone3 = new DroneNode(drone_id=3, initial_x=5.0, initial_y=8.66, initial_z=10.0)
-    drone4 = new DroneNode(drone_id=4, initial_x=5.0, initial_y=-8.66, initial_z=10.0)
+// num_drones and log_level can be overridden at launch time:
+//   --num_drones <N>      number of drones (default 4)
+//   --log_level  <0..4>   0=off 1=ERROR 2=WARN 3=INFO(default) 4=DEBUG
+main reactor DroneSwarm(num_drones: int = 4, log_level: int = 3) {
+    private preamble {=
+        #include "uav_logging.hh"
+    =}
 
-    // Position aggregator for collecting all drone positions
-    position_aggregator = new PositionAggregator()
+    reaction log_level_setting (startup) {=
+        ::uav::g_log_level = log_level;
+    =}
+
+    // Bank of drones: one instance per drone, drone_id = bank index + 1
+    drones = new[num_drones] DroneNode(
+        num_drones = num_drones,
+        initial_z = 10.0
+    )
+
+    // Position aggregator: multiport width matches the bank size
+    aggregator = new PositionAggregator(num_drones = num_drones)
 
     // Formation controller for the entire swarm
-    swarm_formation = new FormationController(drone_id=0) // 0 = leader
+    swarm_formation = new FormationController(drone_id=0, swarm_size=num_drones) // 0 = leader
 
     // Mission coordinator
     mission_coordinator = new MissionExecutor(drone_id=0)
 
-    // Connect formation commands to all drones
-    swarm_formation.position_command -> drone1.formation_command
-    swarm_formation.position_command -> drone2.formation_command
-    swarm_formation.position_command -> drone3.formation_command
-    swarm_formation.position_command -> drone4.formation_command
+    // Command interface: reads mission and formation commands from stdin
+    cmd_interface = new MissionCommandInterface()
 
-    // Connect mission updates to all drones
-    mission_coordinator.mission_status -> drone1.mission_update
-    mission_coordinator.mission_status -> drone2.mission_update
-    mission_coordinator.mission_status -> drone3.mission_update
-    mission_coordinator.mission_status -> drone4.mission_update
+    // Broadcast formation commands to all drones in the bank
+    swarm_formation.position_command -> drones.formation_command
 
-    // Connect drone positions to position aggregator
-    drone1.position -> position_aggregator.pos1
-    drone2.position -> position_aggregator.pos2
-    drone3.position -> position_aggregator.pos3
-    drone4.position -> position_aggregator.pos4
+    // Broadcast mission updates to all drones in the bank
+    mission_coordinator.mission_status -> drones.mission_update
 
-    // Connect aggregated positions to all drones for neighbor awareness
-    position_aggregator.aggregated_positions -> drone1.neighbor_positions after 10 ms
-    position_aggregator.aggregated_positions -> drone2.neighbor_positions after 10 ms
-    position_aggregator.aggregated_positions -> drone3.neighbor_positions after 10 ms
-    position_aggregator.aggregated_positions -> drone4.neighbor_positions after 10 ms
+    // Connect each drone's position to the corresponding multiport slot
+    drones.position -> aggregator.positions
+
+    // Broadcast aggregated positions back to all drones for neighbor awareness
+    aggregator.aggregated_positions -> drones.neighbor_positions after 10 ms
+
+    // Wire stdin commands to swarm-level controllers
+    cmd_interface.mission_command  -> mission_coordinator.mission_command
+    cmd_interface.formation_change -> swarm_formation.formation_change
 }
