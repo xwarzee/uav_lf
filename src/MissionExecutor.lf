@@ -1,7 +1,8 @@
 target Cpp
 
 reactor MissionExecutor(
-    drone_id: int = 0
+    drone_id: int = 0,
+    swarm_size: int = 1   // >1 only for the swarm coordinator — enables multiport broadcast
 ) {
     private preamble {=
         #include <cmath>
@@ -18,7 +19,7 @@ reactor MissionExecutor(
     input formation_ready: bool
 
     // Output ports
-    output mission_status: {= std::string =}
+    output[swarm_size] mission_status: {= std::string =}
     output target_waypoint: {= std::vector<double> =}
     output mission_complete: bool
     output emergency_abort: bool
@@ -49,42 +50,46 @@ reactor MissionExecutor(
 
     // Initialize mission executor
     reaction(startup) -> mission_status {=
+        auto broadcast = [&](const std::string& s) {
+            for (int i = 0; i < (int)mission_status.size(); i++) mission_status[i].set(s);
+        };
         LF_INFO << "Mission Executor " << drone_id << " initialized";
-        std::string status = "INITIALIZED";
-        mission_status.set(status);
-
         mission_waypoints.clear();
         current_waypoint_index = 0;
         mission_progress = 0.0;
+        broadcast("INITIALIZED");
     =}
 
     // Handle new mission commands
     reaction mission_cmd (mission_command) -> mission_status, target_waypoint {=
+        auto broadcast = [&](const std::string& s) {
+            for (int i = 0; i < (int)mission_status.size(); i++) mission_status[i].set(s);
+        };
         std::string command = *mission_command.get();
 
         if (command == "START" && current_mission != "IDLE") {
             startMission();
             LF_INFO << "Drone " << drone_id << ": Swarm mission '" << current_mission
                     << "' starting — broadcasting START to all drones";
-            mission_status.set("START");
+            broadcast("START");
         } else if (command == "STOP" || command == "ABORT") {
             abortMission();
-            mission_status.set("STOP");
+            broadcast("STOP");
         } else if (command == "PAUSE") {
             pauseMission();
-            mission_status.set(current_mission);
+            broadcast(current_mission);
         } else if (command == "RESUME") {
             resumeMission();
-            mission_status.set(current_mission);
+            broadcast(current_mission);
         } else if (command == "RTB") {  // Return to Base
             initializeRTBMission();
-            mission_status.set(current_mission);
+            broadcast(current_mission);
         } else if (std::find(available_missions.begin(), available_missions.end(), command)
                    != available_missions.end()) {
             setMissionType(command);
-            mission_status.set(current_mission);
+            broadcast(current_mission);
         } else {
-            mission_status.set(current_mission);
+            broadcast(current_mission);
         }
     =}
 
@@ -169,7 +174,8 @@ reactor MissionExecutor(
             }
         }
 
-        mission_status.set(current_mission + "_PROGRESS_" + std::to_string((int)(mission_progress * 100)) + "%");
+        for (int i = 0; i < (int)mission_status.size(); i++)
+            mission_status[i].set(current_mission + "_PROGRESS_" + std::to_string((int)(mission_progress * 100)) + "%");
     =}
 
     // Health monitoring

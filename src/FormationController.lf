@@ -70,119 +70,80 @@ reactor FormationController(
         }
     =}
 
-    // Calculate and send formation positions
+    // Calculate and send formation positions — one unique position per drone index
     reaction send_formation_pos (formation_timer) -> position_command {=
         if (!formation_initialized) return;
-
-        std::vector<double> target_position = calculateFormationPosition();
-        // Set all output channels (one per follower drone)
-        for (int i = 0; i < position_command.size(); i++) {
-            position_command[i].set(target_position);
+        int n = (int)position_command.size();
+        for (int i = 0; i < n; i++) {
+            position_command[i].set(calculateFormationPositionFor(i + 1, n));
         }
     =}
 
-
-    method calculateFormationPosition():{= std::vector<double> =} {=
+    // Compute the formation target for drone at 1-based index `drone_index` in a swarm of `total`
+    method calculateFormationPositionFor(drone_index: int, total: int): {= std::vector<double> =} {=
         std::vector<double> position = {0.0, 0.0, 0.0};
-
-        // Base position is leader position
         if (leader_pos.size() >= 3) {
             position[0] = leader_pos[0];
             position[1] = leader_pos[1];
             position[2] = leader_pos[2];
         }
-
-        // If this is the leader (drone_id == 0), return current position
-        if (drone_id == 0) {
-            return position;
-        }
-
-        // Calculate offset based on formation type and drone ID
         double offset_x = 0.0, offset_y = 0.0, offset_z = 0.0;
-
         switch (current_formation) {
-            case 0: // Diamond formation
-                calculateDiamondOffset(offset_x, offset_y, offset_z);
-                break;
-            case 1: // Line formation
-                calculateLineOffset(offset_x, offset_y, offset_z);
-                break;
-            case 2: // V formation
-                calculateVOffset(offset_x, offset_y, offset_z);
-                break;
-            case 3: // Circle formation
-                calculateCircleOffset(offset_x, offset_y, offset_z);
-                break;
+            case 0: calculateDiamondOffsetFor(drone_index, total, offset_x, offset_y, offset_z); break;
+            case 1: calculateLineOffsetFor(drone_index, offset_x, offset_y, offset_z); break;
+            case 2: calculateVOffsetFor(drone_index, offset_x, offset_y, offset_z); break;
+            case 3: calculateCircleOffsetFor(drone_index, total, offset_x, offset_y, offset_z); break;
         }
-
         position[0] += offset_x;
         position[1] += offset_y;
         position[2] += offset_z;
-
         return position;
     =}
 
-    method calculateDiamondOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
-        if (num_followers <= 4) {
+    method calculateDiamondOffsetFor(drone_index: int, total: int, x: {= double& =}, y: {= double& =}, z: {= double& =}) {=
+        if (total <= 4) {
             // Classic 4-point diamond: Front / Right / Back / Left
-            switch (drone_id) {
-                case 1:
-                    x = formation_spacing;
-                    y = 0.0;
-                    break;
-                case 2:
-                    x = 0.0;
-                    y = formation_spacing;
-                    break;
-                case 3:
-                    x = -formation_spacing;
-                    y = 0.0;
-                    break;
-                case 4:
-                    x = 0.0;
-                    y = -formation_spacing;
-                    break;
+            switch (drone_index) {
+                case 1: x = formation_spacing;  y = 0.0; break;
+                case 2: x = 0.0; y = formation_spacing;  break;
+                case 3: x = -formation_spacing; y = 0.0; break;
+                case 4: x = 0.0; y = -formation_spacing; break;
             }
         } else {
-            // General case: distribute evenly on a diamond ring
-            double angle = (drone_id - 1) * 2 * M_PI / num_followers;
+            double angle = (drone_index - 1) * 2 * M_PI / total;
             x = formation_spacing * cos(angle);
             y = formation_spacing * sin(angle);
         }
-        z = 0.0; // Same altitude as leader
+        z = 0.0;
     =}
 
-    method calculateLineOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
-        // Line formation behind leader — works for any N
-        x = -(drone_id * formation_spacing);
+    method calculateLineOffsetFor(drone_index: int, x: {= double& =}, y: {= double& =}, z: {= double& =}) {=
+        x = -(drone_index * formation_spacing);
         y = 0.0;
         z = 0.0;
     =}
 
-    method calculateVOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
-        // V formation — works for any N (alternates left/right)
-        if (drone_id % 2 == 1) {
-            // Odd IDs go to right side
-            int position = (drone_id + 1) / 2;
-            x = -position * formation_spacing * 0.7;
-            y = position * formation_spacing;
+    method calculateVOffsetFor(drone_index: int, x: {= double& =}, y: {= double& =}, z: {= double& =}) {=
+        if (drone_index % 2 == 1) {
+            // Odd indices go to the right side
+            int pos = (drone_index + 1) / 2;
+            x = -pos * formation_spacing * 0.7;
+            y =  pos * formation_spacing;
         } else {
-            // Even IDs go to left side
-            int position = drone_id / 2;
-            x = -position * formation_spacing * 0.7;
-            y = -position * formation_spacing;
+            // Even indices go to the left side
+            int pos = drone_index / 2;
+            x = -pos * formation_spacing * 0.7;
+            y = -pos * formation_spacing;
         }
         z = 0.0;
     =}
 
-    method calculateCircleOffset(x:{= double& =}, y:{= double& =}, z:{= double& =}) {=
-        // Circular formation around leader — uses num_followers for even spacing
-        double angle = (drone_id - 1) * 2 * M_PI / num_followers;
+    method calculateCircleOffsetFor(drone_index: int, total: int, x: {= double& =}, y: {= double& =}, z: {= double& =}) {=
+        double angle = (drone_index - 1) * 2 * M_PI / total;
         x = formation_spacing * cos(angle);
         y = formation_spacing * sin(angle);
         z = 0.0;
     =}
-
 
     // Emergency dispersal reaction
     reaction emergency_dispersal_reaction (startup) {=
