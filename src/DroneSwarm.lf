@@ -13,19 +13,31 @@ import SwarmVisualizer from "SwarmVisualizer.lf"
 reactor PositionAggregator(num_drones: int = 4) {
     // Multiport: one input slot per drone
     input[num_drones] positions: {= std::vector<double> =}
+    // Runtime update of the active drone count (from SWARM N command)
+    input active_count: int
 
     // Multiport: one slot per drone so the N→N connection to drones.neighbor_positions works
     output[num_drones] aggregated_positions: {= std::map<int, std::vector<double>> =}
 
-    // State to store all positions
+    // State to store active positions
     state all_positions: {= std::map<int, std::vector<double>> =}
+    state n_active: int = num_drones
 
     // Timer to periodically send aggregated data
     timer aggregate_timer(0, 50 ms)
 
+    // Track active drone count; remove deactivated drones from the position map
+    reaction(active_count) {=
+        int new_count = *active_count.get();
+        for (int id = new_count + 1; id <= n_active; id++)
+            all_positions.erase(id);
+        n_active = new_count;
+    =}
+
+    // Only store positions for active drones (drone_id <= n_active)
     reaction(positions) {=
-        for (int i = 0; i < positions.size(); i++) {
-            if (positions[i].is_present()) {
+        for (int i = 0; i < (int)positions.size(); i++) {
+            if (positions[i].is_present() && (i + 1) <= n_active) {
                 all_positions[i + 1] = *positions[i].get();
             }
         }
@@ -68,6 +80,8 @@ reactor DroneNode(
     state avoidance_force: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
     state velocity: {= std::vector<double> =} = {= {0.0, 0.0, 0.0} =}
     state mission_active: bool = false
+    state mission_was_active: bool = false  // remembers mission state across DEACTIVATE/ACTIVATE
+    state active: bool = true               // false when removed from swarm via SWARM N
     state log_tick: int = 0    // periodic position log counter
 
     // Timer for periodic updates
@@ -96,19 +110,40 @@ reactor DroneNode(
     reaction(mission_update) {=
         std::string update = *mission_update.get();
         if (update == "START") {
-            mission_active = true;
-            LF_INFO << "Drone " << drone_id
-                    << ": Mission started — position ("
-                    << std::fixed << std::setprecision(2)
-                    << x << ", " << y << ", " << z << ")";
+            mission_was_active = true;
+            if (active) {
+                mission_active = true;
+                LF_INFO << "Drone " << drone_id
+                        << ": Mission started — position ("
+                        << std::fixed << std::setprecision(2)
+                        << x << ", " << y << ", " << z << ")";
+            }
         } else if (update == "STOP") {
             mission_active = false;
+            mission_was_active = false;
             LF_INFO << "Drone " << drone_id << ": Mission stopped";
+        } else if (update == "DEACTIVATE") {
+            active = false;
+            mission_active = false;
+            avoidance_force = {0.0, 0.0, 0.0};
+            LF_INFO << "Drone " << drone_id << ": removed from swarm";
+        } else if (update == "ACTIVATE") {
+            active = true;
+            if (mission_was_active) {
+                mission_active = true;
+                LF_INFO << "Drone " << drone_id << ": added to swarm, rejoining mission at ("
+                        << std::fixed << std::setprecision(1)
+                        << x << ", " << y << ", " << z << ")";
+            } else {
+                LF_INFO << "Drone " << drone_id << ": added to swarm (standby)";
+            }
         }
     =}
 
     // Periodic position update + propulsion
     reaction(update_timer) -> position {=
+        if (!active) return;   // inactive drone: no position published, no propulsion
+
         position.set({x, y, z});
 
         if (!mission_active) return;
@@ -156,6 +191,8 @@ reactor DroneNode(
 
     // Neighbor position processing: compute avoidance force for next update_timer tick
     reaction(neighbor_positions) {=
+        if (!active) return;   // inactive drone: skip avoidance computation
+
         auto neighbors = *neighbor_positions.get();
         avoidance_force = {0.0, 0.0, 0.0};
 
@@ -228,6 +265,9 @@ main reactor DroneSwarm(num_drones: int = 4, log_level: int = 3) {
     cmd_interface.mission_command  -> mission_coordinator.mission_command
     cmd_interface.formation_change -> swarm_formation.formation_change
     cmd_interface.target_position  -> swarm_formation.leader_position
+    cmd_interface.swarm_size -> swarm_formation.swarm_size_update
+    cmd_interface.swarm_size -> mission_coordinator.swarm_size_update
+    cmd_interface.swarm_size -> aggregator.active_count
 
     // Stream drone positions to the live browser visualizer
     drones.position -> viz.positions

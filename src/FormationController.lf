@@ -70,10 +70,12 @@ reactor FormationController(
         }
     =}
 
-    // Calculate and send formation positions — one unique position per drone index
+    // Calculate and send formation positions — one unique position per active drone index.
+    // Inactive drones (index >= num_followers) receive no update and hold their last target.
     reaction send_formation_pos (formation_timer) -> position_command {=
         if (!formation_initialized) return;
-        int n = (int)position_command.size();
+        // Use num_followers (runtime-updated) as the active count, capped to port width
+        int n = std::min(num_followers, (int)position_command.size());
         for (int i = 0; i < n; i++) {
             position_command[i].set(calculateFormationPositionFor(i + 1, n));
         }

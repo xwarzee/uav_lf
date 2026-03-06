@@ -23,9 +23,10 @@ reactor MissionCommandInterface {
     physical action stdin_command: {= std::string =}
 
     // Outputs routed to the appropriate swarm-level reactors
-    output mission_command:   {= std::string =}        // → MissionExecutor
-    output formation_change:  int                      // → FormationController
+    output mission_command:   {= std::string =}          // → MissionExecutor
+    output formation_change:  int                        // → FormationController
     output target_position:   {= std::vector<double> =}  // → FormationController.leader_position
+    output swarm_size: int                               // → Number of drones in the Swarm
 
     // ── Startup: spawn stdin-reader thread ───────────────────────────────
     reaction startup_cmd (startup) -> stdin_command {=
@@ -38,6 +39,7 @@ reactor MissionCommandInterface {
                   << "              FORMATION 2  (V-formation)\n"
                   << "              FORMATION 3  (circle)\n"
                   << "  Position  : TARGET x y z  (centre de formation, ex: TARGET 100 50 15)\n"
+                  << "  Drones in Swarm : SWARM n (n the number of followers drones)\n"
                   << "  Aide      : HELP\n"
                   << "==========================================\n"
                   << "> " << std::flush;
@@ -60,7 +62,7 @@ reactor MissionCommandInterface {
     =}
 
     // ── Command handler ──────────────────────────────────────────────────
-    reaction cmd_handler (stdin_command) -> mission_command, formation_change, target_position {=
+    reaction cmd_handler (stdin_command) -> mission_command, formation_change, target_position, swarm_size {=
         const std::string& cmd = *stdin_command.get();
 
         if (cmd == "HELP") {
@@ -69,7 +71,8 @@ reactor MissionCommandInterface {
                 << "              CARGO_DELIVERY  SURVEILLANCE  INTERCEPT\n"
                 << "  Contrôle  : START  STOP  ABORT  PAUSE  RESUME  RTB\n"
                 << "  Formation : FORMATION 0..3\n"
-                << "  Position  : TARGET x y z  (ex: TARGET 100 50 15)\n";
+                << "  Position  : TARGET x y z  (ex: TARGET 100 50 15)\n"
+                << "  Drones in Swarm : SWARM n (n the number of followers drones)\n";
 
         } else if (cmd.rfind("TARGET", 0) == 0) {
             std::istringstream iss(cmd);
@@ -82,7 +85,17 @@ reactor MissionCommandInterface {
             } else {
                 std::cout << "[ERR] Format: TARGET x y z  (ex: TARGET 100 50 15)\n";
             }
-
+        } else if (cmd.rfind("SWARM", 0) == 0) {
+            std::istringstream iss(cmd);
+            std::string keyword;
+            int drones_number;
+            iss >> keyword >> drones_number;
+            if (!iss.fail()) {
+                std::cout << "[SWARM] → " << drones_number << "\n";
+                swarm_size.set(drones_number);
+            } else {
+                std::cout << "[ERR] Format: TARGET x y z  (ex: TARGET 100 50 15)\n";
+            }
         } else if (cmd.rfind("FORMATION", 0) == 0) {
             // Format: "FORMATION N"
             std::istringstream iss(cmd);
