@@ -21,12 +21,18 @@ canvas{display:block}
 #hud h2{font-size:13px;color:#fff;letter-spacing:3px;margin-bottom:8px}
 #status{position:fixed;bottom:14px;left:14px;font-size:11px;color:#40ff80}
 #hint{position:fixed;bottom:14px;right:14px;font-size:10px;color:#445566;text-align:right}
+#snd-btn{position:fixed;top:14px;right:14px;background:rgba(0,20,40,0.7);
+  border:1px solid #2244aa;color:#80c0ff;font-family:'Courier New',monospace;
+  font-size:11px;padding:5px 10px;cursor:pointer;letter-spacing:1px;
+  text-shadow:0 0 5px #4080ff;transition:background 0.2s}
+#snd-btn:hover{background:rgba(0,40,80,0.9)}
 </style>
 </head>
 <body>
 <div id="hud"><h2>&#x2b21; DRONE SWARM</h2><div id="list"></div></div>
 <div id="status">&#x25cf; CONNECTING&#x2026;</div>
 <div id="hint">Drag: rotate &nbsp; Scroll: zoom<br>Right-click: pan</div>
+<button id="snd-btn">&#x1f507; SOUND OFF</button>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -271,6 +277,88 @@ window.addEventListener("resize", function() {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ── Audio engine ───────────────────────────────────────────────────────────
+// Web Audio API: each drone gets 2 detuned sawtooth oscillators passed through
+// a bandpass filter, simulating the characteristic buzz of spinning rotors.
+// AudioContext is created on the first user gesture (browser autoplay policy).
+
+var audioCtx = null;
+var masterGain = null;
+var soundEnabled = false;
+const droneAudio = {};  // id → {osc1, osc2, filter, gain}
+
+function ensureAudioCtx() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.0;
+  masterGain.connect(audioCtx.destination);
+}
+
+function createDroneSound(id) {
+  if (!audioCtx || droneAudio[id]) return;
+  // Slight pitch offset per drone so individual rotors are audible in the mix
+  var base = 82 + (id - 1) * 9;   // Hz: 82, 91, 100, 109, …
+
+  var osc1 = audioCtx.createOscillator();
+  osc1.type = "sawtooth";
+  osc1.frequency.value = base;
+
+  var osc2 = audioCtx.createOscillator();
+  osc2.type = "sawtooth";
+  osc2.frequency.value = base * 2.03;   // slightly detuned 2nd harmonic
+  osc2.detune.value = 8;
+
+  // Bandpass centred slightly above fundamental to shape the rotor timbre
+  var filter = audioCtx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = base * 3.5;
+  filter.Q.value = 1.8;
+
+  var gain = audioCtx.createGain();
+  gain.gain.value = 0.0;             // starts silent; ramped up in moveDrone
+
+  osc1.connect(filter);
+  osc2.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+
+  osc1.start();
+  osc2.start();
+
+  droneAudio[id] = {osc1: osc1, osc2: osc2, filter: filter, gain: gain};
+}
+
+function setDroneVolume(id, active) {
+  if (!audioCtx) return;
+  createDroneSound(id);
+  var node = droneAudio[id];
+  if (!node) return;
+  var target = active ? 0.18 : 0.0;
+  node.gain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.3);
+}
+
+// Silence all drones not present in the latest SSE frame
+function syncDroneAudio(activeIds) {
+  Object.keys(droneAudio).forEach(function(id) {
+    var active = activeIds.indexOf(Number(id)) !== -1;
+    setDroneVolume(Number(id), active);
+  });
+}
+
+// Sound toggle button
+var sndBtn = document.getElementById("snd-btn");
+sndBtn.addEventListener("click", function() {
+  ensureAudioCtx();
+  soundEnabled = !soundEnabled;
+  masterGain.gain.setTargetAtTime(soundEnabled ? 1.0 : 0.0, audioCtx.currentTime, 0.15);
+  sndBtn.textContent = soundEnabled ? "\ud83d\udd0a SOUND ON" : "\ud83d\udd07 SOUND OFF";
+  // Re-activate currently known drones so sound starts immediately
+  if (soundEnabled) {
+    Object.keys(drones).forEach(function(id) { setDroneVolume(Number(id), true); });
+  }
+});
+
 // ── Server-Sent Events ─────────────────────────────────────────────────────
 const statusEl = document.getElementById("status");
 const listEl   = document.getElementById("list");
@@ -287,8 +375,11 @@ es.onerror = function() {
 es.onmessage = function(e) {
   const data = JSON.parse(e.data);
   listEl.innerHTML = "";
+  var activeIds = [];
   data.drones.forEach(function(dr) {
     moveDrone(dr.id, dr.x, dr.y, dr.z);
+    activeIds.push(dr.id);
+    if (soundEnabled) createDroneSound(dr.id);
     const hex = "#" + COLORS[(dr.id - 1) % COLORS.length].toString(16).padStart(6, "0");
     const row = document.createElement("div");
     row.innerHTML =
@@ -299,6 +390,7 @@ es.onmessage = function(e) {
     listEl.appendChild(row);
   });
   if (data.target) setTarget(data.target.x, data.target.y, data.target.z);
+  if (soundEnabled) syncDroneAudio(activeIds);
 };
 </script>
 </body>
