@@ -120,6 +120,7 @@ Bridge between the human operator and the reactive system. Uses an LF **physical
 | `mission_command` | `string` | `mission_coordinator.mission_command` |
 | `formation_change` | `int` | `swarm_formation.formation_change` |
 | `target_position` | `vector<double>` | `swarm_formation.leader_position` |
+| `swarm_size` | `int` | `swarm_formation.swarm_size_update`, `mission_coordinator.swarm_size_update`, `aggregator.active_count` |
 
 **Recognised commands:**
 
@@ -129,6 +130,7 @@ Bridge between the human operator and the reactive system. Uses an LF **physical
 | Control | `START` `STOP` `ABORT` `PAUSE` `RESUME` `RTB` |
 | Formation | `FORMATION 0` (diamond) `FORMATION 1` (line) `FORMATION 2` (V) `FORMATION 3` (circle) |
 | Position | `TARGET x y z` (formation centre — updates `leader_position` in FormationController) |
+| Swarm size | `SWARM N` (resize the active swarm to N drones; activates/deactivates drones without recompilation) |
 | Help | `HELP` |
 
 **Example session:**
@@ -147,6 +149,8 @@ Bridge between the human operator and the reactive system. Uses an LF **physical
 [FORMATION] → circle
 > TARGET 100 50 20
 [TARGET] → (100.00, 50.00, 20.00)
+> SWARM 3
+[SWARM] → 3 active drones
 > PAUSE
 [MISSION] → PAUSE
 > RTB
@@ -165,8 +169,11 @@ Collects the positions of all drones through an **input multiport** of width `nu
 |------|------|-------|
 | `positions[num_drones]` | `vector<double>` | N inputs |
 | `aggregated_positions[num_drones]` | `map<int, vector<double>>` | N outputs |
+| `active_count` | `int` | 1 input (from `cmd_interface.swarm_size`) |
 
 The output multiport ensures a clean N→N connection to `drones.neighbor_positions` (see §9).
+
+**State:** `n_active: int = num_drones` — tracks the number of currently active drones. When `active_count` decreases, deactivated drone entries are removed from `all_positions`. The `positions` reaction only stores positions for drones where `(i+1) <= n_active`.
 
 | Timer | Period |
 |-------|--------|
@@ -207,6 +214,8 @@ This spacing ensures drones do not overlap at startup, allowing collision avoida
 | `avoidance_force` | `vector<double>` | `{0, 0, 0}` | repulsion force (collision avoidance) |
 | `velocity` | `vector<double>` | `{0, 0, 0}` | resulting velocity |
 | `mission_active` | `bool` | `false` | enables propulsion |
+| `active` | `bool` | `true` | drone is active; inactive drones skip all propulsion and position publishing |
+| `mission_was_active` | `bool` | `false` | remembers `mission_active` state across a DEACTIVATE/ACTIVATE cycle |
 
 **Ports:**
 
@@ -226,8 +235,10 @@ This spacing ensures drones do not overlap at startup, allowing collision avoida
 | `formation_command` | updates `target_pos` (drone moves towards this target) |
 | `mission_update = "START"` | sets `mission_active = true`, logs current position |
 | `mission_update = "STOP"` | sets `mission_active = false` |
-| `update_timer` (100 ms) | publishes `position`, applies propulsion + integration when `mission_active` |
-| `neighbor_positions` | recomputes `avoidance_force` (repulsion for distances 0.1–5 m) |
+| `mission_update = "DEACTIVATE"` | sets `active = false`, saves `mission_active` to `mission_was_active`, clears `mission_active` |
+| `mission_update = "ACTIVATE"` | sets `active = true`, restores `mission_active` from `mission_was_active` |
+| `update_timer` (100 ms) | no-op if `!active`; otherwise publishes `position`, applies propulsion + integration when `mission_active` |
+| `neighbor_positions` | no-op if `!active`; otherwise recomputes `avoidance_force` (repulsion for distances 0.1–5 m) |
 
 **Instantiated subsystems:**
 
@@ -260,8 +271,9 @@ Computes the target position of each drone within the formation. Instantiated on
 |------|------|--------|
 | `formation_change` | `int` | `cmd_interface.formation_change` |
 | `leader_position` | `vector<double>` | `cmd_interface.target_position` |
+| `swarm_size_update` | `int` | `cmd_interface.swarm_size` |
 
-The `leader_position` port receives the formation centre set by the `TARGET x y z` command. When not set, the formation is centred on the origin.
+The `leader_position` port receives the formation centre set by the `TARGET x y z` command. When not set, the formation is centred on the origin. The `swarm_size_update` port updates the runtime `num_followers` counter so that `send_formation_pos` loops only over currently active drones.
 
 **Formation types:**
 
@@ -341,6 +353,14 @@ Manages the mission lifecycle: waypoint loading, progress tracking, timeout mana
 | `drone_id` | 0 | drone identifier |
 | `swarm_size` | 1 | output multiport width (> 1 only for the swarm coordinator) |
 
+**Input ports:**
+
+| Port | Type | Source |
+|------|------|--------|
+| `swarm_size_update` | `int` | `cmd_interface.swarm_size` |
+
+When `swarm_size_update` fires, the `swarm_size_change` reaction broadcasts `"ACTIVATE"` to newly added drone slots and `"DEACTIVATE"` to removed slots via `mission_status`.
+
 **Output ports:**
 
 | Port | Type | Description |
@@ -359,6 +379,8 @@ Manages the mission lifecycle: waypoint loading, progress tracking, timeout mana
 | `"STOP"` | `STOP` or `ABORT` command (sets `mission_active = false`) |
 | `"PATROL"`, `"RTB"`, … | mission type change |
 | `"PATROL_PROGRESS_xx%"` | periodic progress update (100 ms) |
+| `"ACTIVATE"` | `SWARM N` command — sent to drone slots newly included in the active swarm |
+| `"DEACTIVATE"` | `SWARM N` command — sent to drone slots removed from the active swarm |
 
 **Supported missions:**
 
@@ -438,12 +460,16 @@ Each SSE connection is handled in its own detached client thread. The HTML page 
 
 **Three.js page features:**
 
-- Coloured spheres for each drone (colour by index)
+- 3D quadcopter models per drone (body, arms, rotors, legs, navigation LEDs)
+- Banking animation (drone tilts toward direction of motion)
+- Propeller spin animation (alternating CW/CCW per rotor)
 - 150-point trails per drone
 - Drone number labels
 - HUD displaying live x/y/z coordinates
 - OrbitControls: rotate, zoom, pan with mouse
 - Ground grid as spatial reference
+- Web Audio API sound synthesis: 2 sawtooth oscillators + bandpass filter per drone, pitch-shifted per drone ID
+- SOUND ON/OFF toggle button
 
 **Connection in DroneSwarm:**
 
@@ -466,8 +492,11 @@ drones.position -> viz.positions
 │                │                                                 │
 │                ├──[mission_command]──► mission_coordinator       │
 │                ├──[formation_change]──► swarm_formation          │
-│                └──[target_position]──► swarm_formation           │
-│                         (leader_position: formation centre)      │
+│                ├──[target_position]──► swarm_formation           │
+│                │        (leader_position: formation centre)      │
+│                ├──[swarm_size]──► swarm_formation.swarm_size_update│
+│                ├──[swarm_size]──► mission_coordinator.swarm_size_update│
+│                └──[swarm_size]──► aggregator.active_count        │
 │                                                                  │
 │  swarm_formation ──[position_command × N]──► drones[N]          │
 │         multiport N → N (unique target per drone)               │
@@ -848,3 +877,12 @@ data: {"drones":[{"id":1,"x":0.0,"y":0.0,"z":10.0},{"id":2,"x":5.0,"y":-5.0,"z":
 ```
 
 The browser consumes this stream via `new EventSource('/events')` and updates the Three.js scene on each received message.
+
+### Audio
+
+The browser page includes a Web Audio API sound synthesis engine that gives each drone an audible presence:
+
+- Click the **"SOUND OFF"** button (top-right corner of the page) to enable audio; it toggles to **"SOUND ON"** while active.
+- Each drone emits a characteristic rotor buzz synthesized entirely in the browser: two sawtooth oscillators (fundamental `base = 82 + (id-1)*9` Hz and a slightly detuned 2nd harmonic at `base × 2.03`) shaped by a bandpass filter centred at ~3.5× the fundamental (Q = 1.8). Volume ramps up smoothly when a drone appears and ramps down when it disappears.
+- Each drone has a slightly different pitch (stepped by 9 Hz per drone ID), so individual drones can be distinguished aurally even without visual tracking.
+- The `AudioContext` is created lazily on the first button click to comply with the browser autoplay policy (audio is never started without a user gesture).

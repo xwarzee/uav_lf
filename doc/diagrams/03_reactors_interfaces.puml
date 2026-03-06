@@ -16,12 +16,14 @@ class "MissionCommandInterface" <<reactor>> {
     + mission_command : string
     + formation_change : int
     + target_position : vector<double>
+    + swarm_size : int
     ..Commands..
     ~ PATROL  ESCORT  RECONNAISSANCE
     ~ SEARCH_RESCUE  SURVEILLANCE  INTERCEPT
     ~ START  STOP  ABORT  PAUSE  RESUME  RTB
     ~ FORMATION 0..3
     ~ TARGET x y z
+    ~ SWARM N
 }
 
 class "PositionAggregator" <<reactor>> {
@@ -29,8 +31,11 @@ class "PositionAggregator" <<reactor>> {
     + num_drones : int = 4
     ..Inputs..
     + positions[num_drones] : vector<double>
+    + active_count : int
     ..Outputs..
     + aggregated_positions[num_drones] : map<int, vector<double>>
+    ..State..
+    ~ n_active : int
     ..Timers..
     ~ aggregate_timer : 0, 50 ms
 }
@@ -55,6 +60,9 @@ class "DroneNode" <<reactor / bank>> {
     ~ avoidance_force : vector<double>
     ~ velocity : vector<double>
     ~ mission_active : bool
+    ~ active : bool = true
+    ~ mission_was_active : bool = false
+    ~ handles: ACTIVATE / DEACTIVATE
     ..Timers..
     ~ update_timer : 0, 100 ms
 }
@@ -115,6 +123,7 @@ class "MissionExecutor" <<reactor>> {
     + drone_status : map<string, double>
     + obstacle_alert : bool
     + formation_ready : bool
+    + swarm_size_update : int
     ..Outputs..
     + mission_status[swarm_size] : string
     + target_waypoint : vector<double>
@@ -124,6 +133,7 @@ class "MissionExecutor" <<reactor>> {
     ~ "INITIALIZED"  "START"  "STOP"
     ~ "PATROL"  "RTB"  ...
     ~ "PATROL_PROGRESS_xx%"
+    ~ "ACTIVATE"  "DEACTIVATE"
     ..Supported missions..
     ~ PATROL  ESCORT  RECONNAISSANCE
     ~ SEARCH_RESCUE  CARGO_DELIVERY
@@ -173,10 +183,15 @@ class "SwarmVisualizer" <<reactor>> {
     ~   {"id":1,"x":10.0,"y":0.0,"z":10.0},
     ~   ...]}
     ..Three.js features..
-    ~ coloured spheres per drone
+    ~ 3D quadcopter models per drone
+    ~   (body, arms, rotors, legs, LEDs)
+    ~ banking + propeller spin animation
     ~ trails (150 positions)
     ~ live coordinate HUD
     ~ OrbitControls
+    ..Audio..
+    ~ Web Audio API: rotor sound per drone
+    ~ SOUND ON/OFF toggle button
 }
 
 ' Composition inside DroneNode
@@ -186,8 +201,9 @@ DroneNode *-- MissionExecutor    : mission
 DroneNode *-- DroneComms         : droneComms
 
 ' DroneSwarm-level connections
-MissionCommandInterface ..> MissionExecutor    : mission_command
-MissionCommandInterface ..> FormationController : formation_change\ntarget_position
+MissionCommandInterface ..> MissionExecutor    : mission_command\nswarm_size → swarm_size_update
+MissionCommandInterface ..> FormationController : formation_change\ntarget_position\nswarm_size → swarm_size_update
+MissionCommandInterface ..> PositionAggregator : swarm_size → active_count
 FormationController     ..> DroneNode          : position_command[N]
 MissionExecutor         ..> DroneNode          : mission_status[N]
 DroneNode               ..> PositionAggregator : position[N]

@@ -40,6 +40,20 @@ SF  -> SF  : current_formation ← 3 (Circle)
 
 note over SF : leader_pos = {100, 50, 15}\nformation = Circle, spacing = 10 m\nDrone 1 target: (110, 50, 15)\nDrone 2 target: (100, 60, 15)\nDrone 3 target:  (90, 50, 15)\nDrone 4 target: (100, 40, 15)
 
+== Phase 1b: Dynamic swarm resizing ==
+
+OP  -> CI  : "SWARM 3"
+CI  -> SF  : swarm_size = 3
+CI  -> MC  : swarm_size = 3
+CI  -> PA  : swarm_size = 3 (active_count)
+SF  -> SF  : num_followers ← 3
+MC  -> MC  : swarm_size_change reaction\n→ mission_status[3] = "DEACTIVATE"\n[INFO] "Drone 4: removed from swarm"
+PA  -> PA  : n_active ← 3\n(drone 4 filtered from position map)
+MC  ->> DN : mission_status[3] = "DEACTIVATE"
+DN  -> DN  : (drone 4 only)\nactive ← false, mission_active ← false\n[INFO] "Drone 4: removed from swarm"
+
+note over DN : Drone 4 publishes no position\nand applies no propulsion.\nSWARM 4 would reactivate it.
+
 == Phase 2: Formation computation (before START) ==
 
 loop every 50 ms

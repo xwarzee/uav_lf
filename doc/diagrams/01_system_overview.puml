@@ -21,13 +21,13 @@ title DroneSwarm — System Overview\n«Lingua-Franca C++ target»
 
 package "DroneSwarm  «main reactor»  (num_drones=N, log_level=3)" {
 
-    component "MissionCommandInterface\n──────────────\nstdin → physical action\n«detached thread»\noutputs: mission_command\n         formation_change\n         target_position" as CI
+    component "MissionCommandInterface\n──────────────\nstdin → physical action\n«detached thread»\noutputs: mission_command\n         formation_change\n         target_position\n         swarm_size" as CI
 
     component "FormationController\n──────────────\ndrone_id = 0  (leader)\nswarm_size = N\ninput  leader_position\noutput[N] position_command\n«formation timer 50 ms»" as SF
 
-    component "MissionExecutor\n──────────────\ndrone_id = 0  (coordinator)\nswarm_size = N\noutput[N] mission_status\n«update timer 100 ms»" as MC
+    component "MissionExecutor\n──────────────\ndrone_id = 0  (coordinator)\nswarm_size = N\ninput  swarm_size_update\noutput[N] mission_status\n«update timer 100 ms»" as MC
 
-    component "PositionAggregator\n──────────────\nnum_drones = N\ninput[N] positions\noutput[N] aggregated_positions\n«aggregate timer 50 ms»" as PA
+    component "PositionAggregator\n──────────────\nnum_drones = N\ninput[N] positions\ninput  active_count\noutput[N] aggregated_positions\n«aggregate timer 50 ms»" as PA
 
     component "SwarmVisualizer\n──────────────\nnum_drones = N\nport = 8080\ninput[N] positions\nHTTP + SSE server\nhttp://localhost:8080" as VIZ
 
@@ -39,6 +39,9 @@ package "DroneSwarm  «main reactor»  (num_drones=N, log_level=3)" {
 CI -down-> MC  : mission_command\nstring
 CI -down-> SF  : formation_change\nint
 CI -down-> SF  : target_position\nvector<double>\n→ leader_position\n(formation centre)
+CI -down-> MC  : swarm_size\nint → swarm_size_update\n(active drone count)
+CI -down-> SF  : swarm_size\nint → swarm_size_update
+CI -down-> PA  : swarm_size\nint → active_count
 
 SF -down-> DN  : «N → N multiport»\nposition_command[i] : vector<double>\n→ drone i target_pos
 
@@ -59,7 +62,7 @@ end note
 note bottom of VIZ
   Browser: http://localhost:8080
   SSE JSON every 100 ms
-  Three.js: spheres + trails + HUD
+  Three.js: quadcopter 3D models + trails + HUD\n  Web Audio API: rotor sound per drone
 end note
 
 @enduml
