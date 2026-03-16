@@ -42,3 +42,9 @@
 
 # debug information files
 *.dwo
+build/
+src-gen/
+include/
+lib/
+share/
+bin/
